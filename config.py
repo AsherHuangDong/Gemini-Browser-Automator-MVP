@@ -228,8 +228,13 @@ class Config:
 
     def from_args(self, args: argparse.Namespace) -> None:
         """从命令行参数覆盖配置"""
-        if hasattr(args, 'headless') and args.headless:
-            self.browser.headless = args.headless
+        # v1.1 改进：处理 headless 和 no-headless 参数
+        if hasattr(args, 'headless') and hasattr(args, 'no_headless'):
+            if args.headless:
+                self.browser.headless = True
+            elif args.no_headless:
+                self.browser.headless = False
+            # 如果都没有指定，使用 BrowserConfig 的默认值（True）
 
         if hasattr(args, 'profile') and args.profile:
             self.browser.profile_dir = args.profile

@@ -368,11 +368,18 @@ def create_parser() -> argparse.ArgumentParser:
 
     # 共享参数
     for p in [interactive_parser, query_parser]:
-        p.add_argument(
+        headless_group = p.add_mutually_exclusive_group()
+        headless_group.add_argument(
             "--headless",
             action="store_true",
-            default=False,
-            help="启用 headless 模式（无 GUI 窗口）",
+            default=None,
+            help="启用 headless 模式（无 GUI 窗口，默认：True）",
+        )
+        headless_group.add_argument(
+            "--no-headless",
+            action="store_true",
+            default=None,
+            help="禁用 headless 模式（显示浏览器窗口）",
         )
 
         p.add_argument(
