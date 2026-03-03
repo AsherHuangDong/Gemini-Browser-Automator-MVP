@@ -487,15 +487,9 @@ class GeminiBrowser:
         if not input_found:
             logger.warning("⚠ 健康检查失败：未找到输入框")
             logger.warning("可能的原因：session 失效或页面结构变化")
+            logger.warning("继续尝试发送消息...")
             
-            # 检查是否仍然已登录
-            is_logged_in = await self._check_login_status_v11()
-            
-            if not is_logged_in:
-                logger.warning("检测到登录态失效，触发重新登录流程...")
-                await self._fallback_to_headful_login()
-            else:
-                logger.warning("输入框可能暂时不可用，继续尝试...")
+            # 不再触发重新登录，因为文件上传后输入框可能暂时不可用
 
     async def send_message(self, prompt: str) -> None:
         """
@@ -1148,6 +1142,10 @@ class GeminiBrowser:
         full_response = ""
 
         try:
+            # 等待页面稳定（特别是文件上传后）
+            logger.debug("等待页面稳定...")
+            await asyncio.sleep(1)
+
             # 发送消息
             await self._execute_with_retry(
                 self.send_message, prompt, max_retries=self.retry_count
@@ -1455,8 +1453,8 @@ class GeminiBrowser:
                 raise FileUploadError(f"处理文件选择器失败: {chooser_error}")
 
             # 步骤 3: 等待文件处理
-            logger.debug("步骤 3: 等待文件处理（0.5秒）...")
-            await asyncio.sleep(0.5)  # 从 1 秒减少到 0.5 秒
+            logger.debug("步骤 3: 等待文件处理...")
+            await asyncio.sleep(5)  # 增加等待时间（从 0.5 秒增加到 5 秒）
 
             # 步骤 4: 验证文件是否已加载到页面
             logger.debug("步骤 4: 验证文件是否已加载...")
@@ -1506,6 +1504,10 @@ class GeminiBrowser:
                     }
 
             logger.debug("✓ 文件上传完成")
+
+            # 额外等待，让页面完全稳定（特别是 headless 模式）
+            logger.debug("额外等待 2 秒，让页面完全稳定...")
+            await asyncio.sleep(2)
 
             return {
                 'preview_visible': upload_complete,
