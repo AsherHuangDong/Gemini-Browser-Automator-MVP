@@ -1368,10 +1368,7 @@ class GeminiBrowser:
                         "建议：在浏览器中手动点击输入框，然后重新尝试上传"
                     )
 
-            # 步骤 2: 直接设置文件到输入框（不弹出文件选择器）
-            logger.debug("步骤 2: 直接设置文件到输入框...")
-
-            # 步骤 2: 使用 Playwright 的 filechooser 事件拦截（不弹出选择器）
+# 步骤 2: 使用 Playwright 的 filechooser 事件拦截（不弹出选择器）
             logger.debug("步骤 2: 使用 filechooser 事件拦截文件选择器...")
 
             try:
@@ -1388,26 +1385,58 @@ class GeminiBrowser:
                 # 等待菜单渲染
                 await asyncio.sleep(1.0)
 
-                # 查找并点击"上传文件"选项
-                logger.debug("查找'上传文件'选项...")
-                try:
-                    # 方法1: 使用 data-test-id 直接查找
-                    upload_option = self.page.locator('button[data-test-id="local-images-files-uploader-button"]')
-                    if await upload_option.count() > 0:
-                        logger.debug("✓ 通过 data-test-id 找到上传文件选项")
-                        await upload_option.click()
-                        logger.debug("✓ 已点击上传文件选项")
-                        await asyncio.sleep(0.5)
-                    else:
-                        # 方法2: 使用 get_by_text 查找
-                        upload_option = self.page.get_by_text("上传文件").or_(self.page.get_by_text("Upload file"))
-                        await upload_option.wait_for(timeout=3000, state="visible")
-                        logger.debug("✓ 通过文本找到上传文件选项")
-                        await upload_option.click()
-                        logger.debug("✓ 已点击上传文件选项")
-                        await asyncio.sleep(0.5)
-                except Exception as e:
-                    logger.debug(f"查找/点击上传文件选项失败: {e}")
+                # 根据文件类型选择上传选项
+                file_type = file_path_obj.suffix.lower()
+                logger.debug(f"文件类型: {file_type}")
+
+                # 根据文件类型选择不同的上传选项文本
+                if file_type in ['.mp4', '.webm', '.mov', '.avi', '.mkv']:
+                    # 视频文件
+                    upload_option_texts = ["上传视频", "Upload video", "选择视频"]
+                elif file_type in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
+                    # 图片文件
+                    upload_option_texts = ["上传图片", "Upload image", "选择图片"]
+                elif file_type in ['.pdf']:
+                    # PDF 文件
+                    upload_option_texts = ["上传 PDF", "Upload PDF", "选择 PDF"]
+                else:
+                    # 其他文件（文本、数据等）
+                    upload_option_texts = ["上传文件", "Upload file", "选择文件"]
+
+                logger.debug(f"查找上传选项: {upload_option_texts}")
+
+                # 查找并点击相应的上传选项
+                upload_option_clicked = False
+                for option_text in upload_option_texts:
+                    try:
+                        upload_option = self.page.get_by_text(option_text).first
+                        if await upload_option.count() > 0:
+                            logger.debug(f"✓ 找到上传选项: {option_text}")
+                            await upload_option.click()
+                            logger.debug(f"✓ 已点击上传选项: {option_text}")
+                            upload_option_clicked = True
+                            await asyncio.sleep(0.5)
+                            break
+                    except Exception as e:
+                        logger.debug(f"查找上传选项 '{option_text}' 失败: {e}")
+                        continue
+
+                if not upload_option_clicked:
+                    # 备用方法：使用 data-test-id
+                    logger.debug("尝试使用 data-test-id 查找上传选项...")
+                    try:
+                        upload_option = self.page.locator('button[data-test-id="local-images-files-uploader-button"]')
+                        if await upload_option.count() > 0:
+                            logger.debug("✓ 通过 data-test-id 找到上传文件选项")
+                            await upload_option.click()
+                            logger.debug("✓ 已点击上传文件选项")
+                            upload_option_clicked = True
+                            await asyncio.sleep(0.5)
+                    except Exception as e:
+                        logger.debug(f"data-test-id 方法失败: {e}")
+
+                if not upload_option_clicked:
+                    logger.warning(f"⚠ 未找到任何上传选项，尝试直接触发文件选择器")
 
                 # 等待 filechooser 事件触发
                 try:
