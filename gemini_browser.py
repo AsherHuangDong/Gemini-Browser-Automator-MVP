@@ -50,7 +50,7 @@ class GeminiBrowser:
 
     def __init__(
         self,
-        headless: bool = False,
+        headless: bool = True,  # v1.1 改进：默认使用 headless 模式
         profile_dir: str = "./profiles",
         timeout: int = 30,
         retry_count: int = 3,
@@ -344,13 +344,15 @@ class GeminiBrowser:
 
     async def _check_login_status_v11(self) -> bool:
         """
-        v1.1 更严格的登录检查
+        v1.1 更严格的登录检查（改进版）
         
-        检查条件（必须同时满足 A + B）：
-        A: URL 不含登录关键词
-        B: 输入框 locator 可见且 enabled
-        C: 尝试定位"Google 账号"相关元素（加分项）
-        D: 页面文本中不包含"Sign in" 或 "登录"字样（加分项）
+        检查条件：
+        主要条件：输入框 locator 可见且 enabled（如果找到，就认为已登录）
+        辅助条件 A: URL 不含登录关键词（accounts.google.com / SignIn / ServiceLogin）
+        辅助条件 C: 尝试定位"Google 账号"相关元素（加分项）
+        辅助条件 D: 页面文本中不包含"Sign in" 或 "登录"字样（加分项）
+        
+        改进：只要找到输入框，就认为已登录（避免误判）
         
         返回 True 表示已登录
         """
@@ -361,18 +363,9 @@ class GeminiBrowser:
             'Text': False
         }
 
-        # 条件 A: 检查 URL
-        current_url = self.page.url
-        login_keywords = ['accounts.google.com', 'SignIn', 'ServiceLogin', 'login']
-        url_has_login_keyword = any(keyword in current_url for keyword in login_keywords)
-        
-        if not url_has_login_keyword:
-            checks['URL'] = True
-            logger.debug(f"✓ 条件 A: URL 检查通过 ({current_url})")
-        else:
-            logger.warning(f"✗ 条件 A: URL 包含登录关键词 ({current_url})")
+        logger.info("开始执行登录检查...")
 
-        # 条件 B: 检查输入框
+        # 条件 B: 检查输入框（主要条件）
         input_found = False
         for selector in config.gemini.input_selectors:
             try:
@@ -383,15 +376,27 @@ class GeminiBrowser:
                 
                 if is_visible and is_enabled:
                     input_found = True
-                    logger.debug(f"✓ 条件 B: 找到可用输入框 ({selector})")
+                    checks['Input'] = True
+                    logger.info(f"✓ 主要条件：找到可用输入框 ({selector})")
                     break
-            except Exception:
+            except Exception as e:
+                logger.debug(f"输入框检查失败 ({selector}): {e}")
                 continue
         
-        if input_found:
-            checks['Input'] = True
+        if not input_found:
+            logger.warning("✗ 主要条件：未找到可用输入框")
+
+        # 条件 A: 检查 URL（辅助条件）
+        current_url = self.page.url
+        logger.info(f"当前 URL: {current_url}")
+        login_keywords = ['accounts.google.com', 'signin', 'service login']  # 更严格的关键词
+        url_has_login_keyword = any(keyword.lower() in current_url.lower() for keyword in login_keywords)
+        
+        if not url_has_login_keyword:
+            checks['URL'] = True
+            logger.info("✓ 辅助条件 A: URL 检查通过")
         else:
-            logger.warning("✗ 条件 B: 未找到可用输入框")
+            logger.warning(f"✗ 辅助条件 A: URL 可能包含登录关键词")
 
         # 条件 C: 检查 Google 账号相关元素（加分项）
         try:
@@ -407,7 +412,7 @@ class GeminiBrowser:
                     account_element = await self.page.query_selector(selector)
                     if account_element:
                         checks['Account'] = True
-                        logger.debug(f"✓ 条件 C: 找到账号元素 ({selector})")
+                        logger.info(f"✓ 辅助条件 C: 找到账号元素 ({selector})")
                         break
                 except Exception:
                     continue
@@ -431,10 +436,13 @@ class GeminiBrowser:
         except Exception as e:
             logger.debug(f"条件 D 检查失败: {e}")
 
-        # 判断逻辑：必须满足 A + B
-        is_logged_in = checks['URL'] and checks['Input']
+        # 判断逻辑（改进版）：只要找到输入框就认为已登录
+        is_logged_in = checks['Input']
         
-        logger.debug(f"登录检查结果: URL={checks['URL']}, Input={checks['Input']}, Account={checks['Account']}, Text={checks['Text']}")
+        if is_logged_in:
+            logger.info(f"✓ 登录检查通过！Input={checks['Input']}, URL={checks['URL']}, Account={checks['Account']}, Text={checks['Text']}")
+        else:
+            logger.warning(f"✗ 登录检查失败！Input={checks['Input']}, URL={checks['URL']}, Account={checks['Account']}, Text={checks['Text']}")
         
         return is_logged_in
 
