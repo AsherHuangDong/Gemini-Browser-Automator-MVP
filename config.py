@@ -14,6 +14,56 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 
+def get_system_proxy() -> Optional[Dict[str, str]]:
+    """
+    获取系统代理设置
+    
+    Returns:
+        如果启用代理，返回 {"server": "http://proxy_address:port"}
+        否则返回 None
+    """
+    try:
+        import winreg
+        
+        # 打开注册表
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                           r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as key:
+            # 检查是否启用代理
+            proxy_enable, _ = winreg.QueryValueEx(key, "ProxyEnable")
+            
+            if proxy_enable:
+                # 获取代理服务器地址
+                proxy_server, _ = winreg.QueryValueEx(key, "ProxyServer")
+                logger.info(f"检测到系统代理: {proxy_server}")
+                
+                # 处理代理格式（可能包含多个代理，格式如 "http=127.0.0.1:15715;https=127.0.0.1:15715"）
+                if "=" in proxy_server:
+                    # 分割多个代理
+                    proxies = {}
+                    for proxy in proxy_server.split(";"):
+                        if "=" in proxy:
+                            protocol, addr = proxy.split("=", 1)
+                            proxies[protocol] = addr
+                    
+                    # 优先使用 http 代理
+                    if "http" in proxies:
+                        return {"server": f"http://{proxies['http']}"}
+                    elif "https" in proxies:
+                        return {"server": f"http://{proxies['https']}"}
+                    else:
+                        return {"server": f"http://{list(proxies.values())[0]}"}
+                else:
+                    # 单个代理地址
+                    return {"server": f"http://{proxy_server}"}
+            else:
+                logger.info("系统代理未启用")
+                return None
+                
+    except Exception as e:
+        logger.warning(f"获取系统代理失败: {e}")
+        return None
+
+
 @dataclass
 class BrowserConfig:
     """浏览器配置"""
@@ -26,6 +76,8 @@ class BrowserConfig:
     timezone: str = "Asia/Tokyo"
     # 浏览器路径配置（如果为 None，使用 Playwright 自带的 Chromium）
     browser_path: Optional[str] = None  # 例如：r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    # 代理配置
+    proxy: Optional[Dict[str, str]] = None  # 例如：{"server": "http://127.0.0.1:15715"}
 
 
 @dataclass
@@ -158,8 +210,13 @@ class Config:
 
     def __init__(self):
         load_dotenv()
+        
+        # 自动获取系统代理
+        proxy = get_system_proxy()
+        
         self.browser = BrowserConfig(
-            browser_path=os.getenv("BROWSER_PATH")
+            browser_path=os.getenv("BROWSER_PATH"),
+            proxy=proxy
         )
         self.gemini = GeminiConfig()
         self._validate_profile_dir()

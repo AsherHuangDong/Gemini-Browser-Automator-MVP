@@ -149,6 +149,11 @@ class GeminiBrowser:
             }
             logger.debug("不设置 viewport，让浏览器自适应窗口大小")
 
+            # 添加代理配置（如果存在）
+            if config.browser.proxy:
+                context_kwargs["proxy"] = config.browser.proxy
+                logger.info(f"✓ 使用代理: {config.browser.proxy}")
+
             # 如果存在保存的 storage，则加载
             if profile_state_file.exists():
                 try:
