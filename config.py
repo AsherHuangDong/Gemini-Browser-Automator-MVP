@@ -215,7 +215,6 @@ class Config:
         proxy = get_system_proxy()
         
         self.browser = BrowserConfig(
-            browser_path=os.getenv("BROWSER_PATH"),
             proxy=proxy
         )
         self.gemini = GeminiConfig()
@@ -244,6 +243,17 @@ class Config:
                 logger.info("未指定 headless 参数，使用 BrowserConfig 默认值")
             
             logger.info(f"最终 headless 值: {self.browser.headless}")
+            
+        elif hasattr(args, 'headless'):
+            # 只有 --headless，没有 --no-headless，显式设置为 True
+            if args.headless:
+                self.browser.headless = True
+                logger.info("已显式设置 headless=True")
+        elif hasattr(args, 'no_headless'):
+            # 只有 --no-headless，显式设置为 False
+            if args.no_headless:
+                self.browser.headless = False
+                logger.info("已显式设置 headless=False")
 
         if hasattr(args, 'profile') and args.profile:
             self.browser.profile_dir = args.profile
@@ -256,9 +266,13 @@ class Config:
         if hasattr(args, 'retry') and args.retry:
             self.browser.retry_count = args.retry
 
+        # 浏览器路径：命令行参数 > 环境变量 > 默认值
         if hasattr(args, 'browser_path') and args.browser_path:
             self.browser.browser_path = args.browser_path
             logger.debug(f"已配置使用已安装的浏览器: {args.browser_path}")
+        elif not self.browser.browser_path and os.getenv("BROWSER_PATH"):
+            self.browser.browser_path = os.getenv("BROWSER_PATH")
+            logger.debug(f"使用环境变量 BROWSER_PATH: {os.getenv('BROWSER_PATH')}")
 
         if hasattr(args, 'retry') and args.retry:
             self.browser.retry_count = args.retry
