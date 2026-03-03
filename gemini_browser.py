@@ -619,19 +619,22 @@ class GeminiBrowser:
 
 
             # 以更长的时间等待响应开始生成（Gemini 服务器响应需要时间）
-            logger.debug("等待响应开始生成（最长 2 秒）...")
+            logger.debug("等待响应开始生成（最长 10 秒）...")
 
-            # 尝试等待消息容器出现，只等 2 秒（因为轮询会重新检测）
+            # 尝试等待消息容器出现，等待更长时间
             try:
                 await self.page.wait_for_selector(
                     "div[role='region'] >> text=I am Gemini, "
                     "div.message-content, "
                     "div[data-message-author-role='model']",
-                    timeout=2000  # ⚡ 从 30 秒改为 2 秒（快 15 倍）
+                    timeout=10000  # 增加到 10 秒
                 )
                 logger.debug("✓ 检测到响应容器已出现")
             except PlaywrightTimeoutError:
                 logger.debug("⚠ 响应容器未立即出现，直接开始轮询...")
+                # 额外等待 3 秒，给 AI 更多时间生成回复
+                logger.debug("额外等待 3 秒...")
+                await asyncio.sleep(3)
 
             # 多个响应容器选择器（优先级排列）
             # 针对 Gemini 3 Flash 的新界面 - 查找聊天区域内的最新 AI 回复
