@@ -176,8 +176,8 @@ class GeminiBrowser:
             # 导航到 Gemini（v1.1 改进：添加页面加载重试）
             await self._navigate_to_gemini_with_retry()
 
-            # 等待页面完全加载
-            await asyncio.sleep(2)
+            # 减少等待时间（从 2 秒减少到 1 秒）
+            await asyncio.sleep(1)
 
             self._running = True
             self._crashed = False
@@ -199,16 +199,16 @@ class GeminiBrowser:
                 logger.debug(f"正在导航到 Gemini (尝试 {attempt + 1}/{max_retries})...")
                 await self.page.goto(config.gemini.base_url, wait_until="domcontentloaded")
                 
-                # 等待页面稳定（networkidle）
+                # 减少等待时间：networkidle 改为更短的超时
                 logger.debug("等待页面稳定...")
                 try:
-                    await self.page.wait_for_load_state("networkidle", timeout=10000)
+                    await self.page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
                     # networkidle 超时不是致命错误，继续
                     logger.debug("networkidle 超时，继续...")
                 
-                # 额外等待 3-5 秒（v1.1 改进）
-                await asyncio.sleep(3)
+                # 减少额外等待时间（从 3 秒减少到 1 秒）
+                await asyncio.sleep(1)
                 
                 logger.debug("✓ 已成功导航到 Gemini")
                 return
@@ -325,8 +325,8 @@ class GeminiBrowser:
         try:
             logger.debug("正在检查登录状态...")
 
-            # 等待页面完全加载（给 JavaScript 时间执行）
-            await asyncio.sleep(3)
+            # 减少等待时间（从 3 秒减少到 1 秒）
+            await asyncio.sleep(1)
 
             # 执行多重登录检查（v1.1 改进）
             is_logged_in = await self._check_login_status_v11()
@@ -349,107 +349,48 @@ class GeminiBrowser:
 
     async def _check_login_status_v11(self) -> bool:
         """
-        v1.1 更严格的登录检查（改进版）
+        v1.1 更严格的登录检查（优化版）
         
         检查条件：
         主要条件：输入框 locator 可见且 enabled（如果找到，就认为已登录）
         辅助条件 A: URL 不含登录关键词（accounts.google.com / SignIn / ServiceLogin）
-        辅助条件 C: 尝试定位"Google 账号"相关元素（加分项）
-        辅助条件 D: 页面文本中不包含"Sign in" 或 "登录"字样（加分项）
         
-        改进：只要找到输入框，就认为已登录（避免误判）
+        改进：
+        1. 只要找到输入框就立即返回，不检查其他条件（速度优先）
+        2. 减少超时时间（从 2000 改为 500）
+        3. 移除慢速检查（页面文本检查）
         
         返回 True 表示已登录
         """
-        checks = {
-            'URL': False,
-            'Input': False,
-            'Account': False,
-            'Text': False
-        }
-
         logger.info("开始执行登录检查...")
 
-        # 条件 B: 检查输入框（主要条件）
-        input_found = False
+        # 主要条件：检查输入框（找到就立即返回）
         for selector in config.gemini.input_selectors:
             try:
                 element = self.page.locator(selector)
-                # 检查元素是否可见和启用
-                is_visible = await element.is_visible(timeout=2000)
+                # 减少超时时间（从 2000 改为 500）
+                is_visible = await element.is_visible(timeout=500)
                 is_enabled = await element.is_enabled()
                 
                 if is_visible and is_enabled:
-                    input_found = True
-                    checks['Input'] = True
-                    logger.info(f"✓ 主要条件：找到可用输入框 ({selector})")
-                    break
+                    logger.info(f"✓ 登录检查通过：找到可用输入框 ({selector})")
+                    return True
             except Exception as e:
                 logger.debug(f"输入框检查失败 ({selector}): {e}")
                 continue
         
-        if not input_found:
-            logger.warning("✗ 主要条件：未找到可用输入框")
-
-        # 条件 A: 检查 URL（辅助条件）
+        # 如果没找到输入框，检查 URL（快速判断）
         current_url = self.page.url
         logger.info(f"当前 URL: {current_url}")
-        login_keywords = ['accounts.google.com', 'signin', 'service login']  # 更严格的关键词
+        login_keywords = ['accounts.google.com', 'signin', 'service login']
         url_has_login_keyword = any(keyword.lower() in current_url.lower() for keyword in login_keywords)
         
-        if not url_has_login_keyword:
-            checks['URL'] = True
-            logger.info("✓ 辅助条件 A: URL 检查通过")
+        if url_has_login_keyword:
+            logger.warning(f"✗ 登录检查失败：URL 包含登录关键词 ({current_url})")
         else:
-            logger.warning(f"✗ 辅助条件 A: URL 可能包含登录关键词")
-
-        # 条件 C: 检查 Google 账号相关元素（加分项）
-        try:
-            account_selectors = [
-                'button[aria-label*="Google Account"]',
-                'img[alt*="Profile"]',
-                '[data-tooltip*="Signed in as"]',
-                'button[aria-label*="account"]'
-            ]
-            
-            for selector in account_selectors:
-                try:
-                    account_element = await self.page.query_selector(selector)
-                    if account_element:
-                        checks['Account'] = True
-                        logger.info(f"✓ 辅助条件 C: 找到账号元素 ({selector})")
-                        break
-                except Exception:
-                    continue
-            
-            if not checks['Account']:
-                logger.debug("○ 条件 C: 未找到账号元素（加分项，不影响）")
-        except Exception as e:
-            logger.debug(f"条件 C 检查失败: {e}")
-
-        # 条件 D: 检查页面文本（加分项）
-        try:
-            body_text = await self.page.inner_text('body')
-            signin_keywords = ['Sign in', '登录', 'Log in']
-            has_signin_text = any(keyword.lower() in body_text.lower() for keyword in signin_keywords)
-            
-            if not has_signin_text:
-                checks['Text'] = True
-                logger.debug("✓ 条件 D: 页面文本检查通过")
-            else:
-                logger.debug("○ 条件 D: 页面包含登录提示（加分项，不影响）")
-        except Exception as e:
-            logger.debug(f"条件 D 检查失败: {e}")
-
-        # 判断逻辑（改进版）：只要找到输入框就认为已登录
-        is_logged_in = checks['Input']
+            logger.warning(f"✗ 登录检查失败：未找到输入框 (URL: {current_url})")
         
-        if is_logged_in:
-            logger.info(f"✓ 登录检查通过！Input={checks['Input']}, URL={checks['URL']}, Account={checks['Account']}, Text={checks['Text']}")
-        else:
-            logger.warning(f"✗ 登录检查失败！Input={checks['Input']}, URL={checks['URL']}, Account={checks['Account']}, Text={checks['Text']}")
-        
-        return is_logged_in
+        return False
 
     async def _fallback_to_headful_login(self) -> None:
         """
