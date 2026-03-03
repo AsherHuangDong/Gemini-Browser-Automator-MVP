@@ -74,8 +74,8 @@ class BrowserConfig:
     check_interval: float = 0.3
     language: str = "zh-CN"
     timezone: str = "Asia/Tokyo"
-    # 浏览器路径配置（如果为 None，使用 Playwright 自带的 Chromium）
-    browser_path: Optional[str] = None  # 例如：r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    # 浏览器路径配置（默认使用已安装的 Chrome）
+    browser_path: Optional[str] = r"C:\Program Files\Google\Chrome\Application\chrome.exe"  # 默认使用 Chrome
     # 代理配置
     proxy: Optional[Dict[str, str]] = None  # 例如：{"server": "http://127.0.0.1:15715"}
 
