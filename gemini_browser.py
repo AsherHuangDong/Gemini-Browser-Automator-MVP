@@ -76,17 +76,50 @@ class GeminiBrowser:
 
     async def launch(self) -> None:
         """
-        启动浏览器
+        启动浏览器（v1.1 改进）
+        
+        1. 初始化 Playwright
+        2. 使用反检测参数启动 Chromium
+        3. 加载或创建 Profile
+        4. 打开新 Page 并导航到 Gemini
+        5. 检查登录状态（v1.1：优先 headless，失败则 fallback 到 headful）
+        """
+        try:
+            logger.debug(f"正在启动浏览器... (headless={self.headless})")
+
+            # 启动浏览器
+            await self._launch_browser()
+
+            # 检查登录状态（v1.1 改进）
+            is_logged_in = await self.ensure_logged_in()
+
+            if not is_logged_in:
+                # headless 模式下登录失败，fallback 到 headful
+                if self.headless:
+                    logger.warning("headless 模式下登录检查失败，切换到 headful 模式...")
+                    await self._fallback_to_headful_login()
+                else:
+                    # 已经是 headful 模式，直接抛出异常
+                    raise LoginRequiredException("未登录，请在浏览器窗口中完成登录")
+
+        except Exception as e:
+            logger.error(f"浏览器启动失败: {e}", exc_info=True)
+            await self._safe_cleanup()
+            raise BrowserException(f"浏览器启动失败: {e}")
+
+    async def _launch_browser(self) -> None:
+        """
+        启动浏览器的核心逻辑（可被 fallback 复用）
+        
         1. 初始化 Playwright
         2. 使用反检测参数启动 Chromium
         3. 加载或创建 Profile
         4. 打开新 Page 并导航到 Gemini
         """
         try:
-            logger.debug(f"正在启动浏览器... (headless={self.headless})")
-
             # 初始化 Playwright
-            self._playwright = await async_playwright().start()
+            if not self._playwright:
+                self._playwright = await async_playwright().start()
 
             # 启动浏览器
             launch_args = config.get_anti_detection_args()
@@ -135,9 +168,8 @@ class GeminiBrowser:
             self.page = await self.context.new_page()
             self.page.set_default_timeout(self.timeout * 1000)
 
-            # 导航到 Gemini
-            await self.page.goto(config.gemini.base_url, wait_until="domcontentloaded")
-            logger.debug("已导航到 Gemini 官网")
+            # 导航到 Gemini（v1.1 改进：添加页面加载重试）
+            await self._navigate_to_gemini_with_retry()
 
             # 等待页面完全加载
             await asyncio.sleep(2)
@@ -148,8 +180,41 @@ class GeminiBrowser:
 
         except Exception as e:
             logger.error(f"浏览器启动失败: {e}", exc_info=True)
-            await self._safe_cleanup()
             raise BrowserException(f"浏览器启动失败: {e}")
+
+    async def _navigate_to_gemini_with_retry(self, max_retries: int = 3) -> None:
+        """
+        导航到 Gemini，支持重试（v1.1 改进）
+        
+        Args:
+            max_retries: 最大重试次数
+        """
+        for attempt in range(max_retries):
+            try:
+                logger.debug(f"正在导航到 Gemini (尝试 {attempt + 1}/{max_retries})...")
+                await self.page.goto(config.gemini.base_url, wait_until="domcontentloaded")
+                
+                # 等待页面稳定（networkidle）
+                logger.debug("等待页面稳定...")
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    # networkidle 超时不是致命错误，继续
+                    logger.debug("networkidle 超时，继续...")
+                
+                # 额外等待 3-5 秒（v1.1 改进）
+                await asyncio.sleep(3)
+                
+                logger.debug("✓ 已成功导航到 Gemini")
+                return
+                
+            except Exception as e:
+                logger.warning(f"导航失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    logger.debug(f"等待 {2 ** attempt} 秒后重试...")
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    raise BrowserException(f"导航到 Gemini 失败（已重试 {max_retries} 次）: {e}")
 
     async def _save_login_state(self) -> None:
         """保存当前登录态到文件"""
@@ -255,101 +320,21 @@ class GeminiBrowser:
         try:
             logger.debug("正在检查登录状态...")
 
-            # 先检查 cookies（如果有关键 cookies，说明之前登录过）
-            try:
-                cookies = await self.context.cookies()
-                key_cookie_names = ['SID', '__Secure-1PSID', '__Secure-3PSID', 'NID']
-                has_login_cookies = any(c['name'] in key_cookie_names for c in cookies)
-                if has_login_cookies:
-                    logger.debug(f"✓ 检测到登录 cookies ({len(cookies)} 个)")
-                else:
-                    logger.warning("⚠ 未检测到登录 cookies，可能需要重新登录")
-            except Exception as e:
-                logger.debug(f"检查 cookies 失败: {e}")
-
             # 等待页面完全加载（给 JavaScript 时间执行）
             await asyncio.sleep(3)
 
-            # 方案1：查找 Gemini 输入框（最灵活的检查方法）
-            # 如果能找到输入框，说明已进入聊天界面，即已登录
-            input_found = False
-            for selector in config.gemini.input_selectors:
-                try:
-                    element = self.page.locator(selector)
-                    await element.wait_for(timeout=3000)
-                    input_found = True
-                    logger.debug(f"✓ 检测到输入框: {selector}，确认已登录")
-                    # 立即保存登录态
-                    await self._save_login_state()
-                    return True
-                except PlaywrightTimeoutError:
-                    continue
-                except Exception:
-                    continue
+            # 执行多重登录检查（v1.1 改进）
+            is_logged_in = await self._check_login_status_v11()
 
-            # 方案2：查找用户头像或菜单（备用）
-            try:
-                user_menu = await self.page.query_selector(
-                    'button[aria-label*="Account"], img[alt*="Profile"], [aria-label*="account"]'
-                )
-                if user_menu:
-                    logger.debug("✓ 检测到用户菜单，确认已登录")
-                    # 立即保存登录态
-                    await self._save_login_state()
-                    return True
-            except Exception:
-                pass
-
-            # 未检测到登录标志，提示用户
-            logger.warning(
-                "\n" + "="*60
-                + "\n检测到未登录。请在弹出的浏览器窗口中手动登录 Google 账户"
-                + "\n登录成功后，返回本终端窗口，按 ENTER 继续"
-                + "\n" + "="*60
-            )
-
-            # 等待用户手动登录后按 Enter 继续
-            input("\n已成功登录？请按 ENTER 继续...")
-
-            # 再次检查（给登录完成更多时间）
-            logger.debug("正在二次确认登录状态...")
-            await asyncio.sleep(3)
-
-            # 再次尝试找输入框
-            for selector in config.gemini.input_selectors:
-                try:
-                    element = self.page.locator(selector)
-                    await element.wait_for(timeout=3000)
-                    logger.debug(f"✓ 确认登录成功！")
-                    # 立即保存登录态
-                    await self._save_login_state()
-                    return True
-                except PlaywrightTimeoutError:
-                    continue
-                except Exception:
-                    continue
-
-            # 再次尝试找用户菜单
-            try:
-                user_menu = await self.page.query_selector(
-                    'button[aria-label*="Account"], img[alt*="Profile"], [aria-label*="account"]'
-                )
-                if user_menu:
-                    logger.debug("✓ 确认登录成功！")
-                    # 立即保存登录态
-                    await self._save_login_state()
-                    return True
-            except Exception:
-                pass
-
-            # 都没找到，提示用户
-            logger.error("未能检测到登录成功的标志")
-            raise LoginRequiredException(
-                "登录似乎失败了。请确保：\n"
-                "1. 你已正确输入 Google 账户邮箱\n"
-                "2. 完成了 Google 的验证流程\n"
-                "3. 成功进入 Gemini 聊天页面"
-            )
+            if is_logged_in:
+                logger.debug("✓ 登录检查通过，确认已登录")
+                # 保存登录态
+                await self._save_login_state()
+                return True
+            else:
+                # 未登录，需要手动登录
+                logger.warning("⚠ 检测到未登录")
+                return False
 
         except LoginRequiredException:
             raise
@@ -357,17 +342,222 @@ class GeminiBrowser:
             logger.error(f"检查登录状态异常: {e}", exc_info=True)
             raise LoginRequiredException(f"检查登录状态失败: {e}")
 
+    async def _check_login_status_v11(self) -> bool:
+        """
+        v1.1 更严格的登录检查
+        
+        检查条件（必须同时满足 A + B）：
+        A: URL 不含登录关键词
+        B: 输入框 locator 可见且 enabled
+        C: 尝试定位"Google 账号"相关元素（加分项）
+        D: 页面文本中不包含"Sign in" 或 "登录"字样（加分项）
+        
+        返回 True 表示已登录
+        """
+        checks = {
+            'URL': False,
+            'Input': False,
+            'Account': False,
+            'Text': False
+        }
+
+        # 条件 A: 检查 URL
+        current_url = self.page.url
+        login_keywords = ['accounts.google.com', 'SignIn', 'ServiceLogin', 'login']
+        url_has_login_keyword = any(keyword in current_url for keyword in login_keywords)
+        
+        if not url_has_login_keyword:
+            checks['URL'] = True
+            logger.debug(f"✓ 条件 A: URL 检查通过 ({current_url})")
+        else:
+            logger.warning(f"✗ 条件 A: URL 包含登录关键词 ({current_url})")
+
+        # 条件 B: 检查输入框
+        input_found = False
+        for selector in config.gemini.input_selectors:
+            try:
+                element = self.page.locator(selector)
+                # 检查元素是否可见和启用
+                is_visible = await element.is_visible(timeout=2000)
+                is_enabled = await element.is_enabled()
+                
+                if is_visible and is_enabled:
+                    input_found = True
+                    logger.debug(f"✓ 条件 B: 找到可用输入框 ({selector})")
+                    break
+            except Exception:
+                continue
+        
+        if input_found:
+            checks['Input'] = True
+        else:
+            logger.warning("✗ 条件 B: 未找到可用输入框")
+
+        # 条件 C: 检查 Google 账号相关元素（加分项）
+        try:
+            account_selectors = [
+                'button[aria-label*="Google Account"]',
+                'img[alt*="Profile"]',
+                '[data-tooltip*="Signed in as"]',
+                'button[aria-label*="account"]'
+            ]
+            
+            for selector in account_selectors:
+                try:
+                    account_element = await self.page.query_selector(selector)
+                    if account_element:
+                        checks['Account'] = True
+                        logger.debug(f"✓ 条件 C: 找到账号元素 ({selector})")
+                        break
+                except Exception:
+                    continue
+            
+            if not checks['Account']:
+                logger.debug("○ 条件 C: 未找到账号元素（加分项，不影响）")
+        except Exception as e:
+            logger.debug(f"条件 C 检查失败: {e}")
+
+        # 条件 D: 检查页面文本（加分项）
+        try:
+            body_text = await self.page.inner_text('body')
+            signin_keywords = ['Sign in', '登录', 'Log in']
+            has_signin_text = any(keyword.lower() in body_text.lower() for keyword in signin_keywords)
+            
+            if not has_signin_text:
+                checks['Text'] = True
+                logger.debug("✓ 条件 D: 页面文本检查通过")
+            else:
+                logger.debug("○ 条件 D: 页面包含登录提示（加分项，不影响）")
+        except Exception as e:
+            logger.debug(f"条件 D 检查失败: {e}")
+
+        # 判断逻辑：必须满足 A + B
+        is_logged_in = checks['URL'] and checks['Input']
+        
+        logger.debug(f"登录检查结果: URL={checks['URL']}, Input={checks['Input']}, Account={checks['Account']}, Text={checks['Text']}")
+        
+        return is_logged_in
+
+    async def _fallback_to_headful_login(self) -> None:
+        """
+        Fallback 流程：从 headless 切换到 headful 模式进行手动登录
+        
+        步骤：
+        1. 关闭当前上下文和浏览器
+        2. 重新以 headful 模式启动同一个 profile_dir
+        3. 弹出浏览器窗口，打印清晰指令
+        4. 等待用户登录后按 Enter
+        5. 重新检查登录状态
+        """
+        logger.warning("\n" + "="*70)
+        logger.warning("检测到登录态失效（或首次使用）")
+        logger.warning("="*70)
+        
+        # 关闭当前浏览器
+        logger.debug("关闭当前浏览器...")
+        await self._safe_cleanup()
+        self._running = False
+        self._crashed = False
+        
+        # 重新以 headful 模式启动
+        logger.debug("以 headful 模式重新启动浏览器...")
+        self.headless = False  # 强制使用 headful 模式
+        
+        # 重新启动浏览器
+        await self._launch_browser()
+        
+        # 打印清晰指令
+        logger.warning("\n" + "="*70)
+        logger.warning("已打开浏览器窗口，请在其中完成 Google 账号登录")
+        logger.warning("（可能需要两步验证）")
+        logger.warning("")
+        logger.warning("登录成功并看到 Gemini 聊天界面后，在此终端按 Enter 键继续...")
+        logger.warning("="*70 + "\n")
+        
+        # 等待用户按 Enter
+        try:
+            input("已成功登录？请按 ENTER 继续...")
+        except EOFError:
+            # 非交互环境，无法等待用户输入
+            logger.warning("非交互环境，无法等待用户输入")
+            raise LoginRequiredException(
+                "检测到未登录，但在非交互环境中无法进行手动登录。\n"
+                "请在交互环境中运行，或删除 profile 文件夹后重新运行。"
+            )
+        
+        # 重新检查登录状态
+        logger.debug("正在重新检查登录状态...")
+        await asyncio.sleep(3)
+        
+        is_logged_in = await self._check_login_status_v11()
+        
+        if is_logged_in:
+            logger.debug("✓ 登录检查通过")
+            # 保存登录态
+            await self._save_login_state()
+            logger.info("✓ 登录态已刷新，下次可 headless 运行")
+        else:
+            logger.error("✗ 登录似乎未成功")
+            raise LoginRequiredException(
+                "登录似乎未成功，请检查：\n"
+                "1. 账号是否正确\n"
+                "2. 网络连接是否正常\n"
+                "3. 是否完成了 Google 的验证流程\n"
+                "4. 删除 profile 文件夹后重试"
+            )
+
+    async def _health_check(self) -> None:
+        """
+        健康检查（v1.1 改进）
+        
+        在每次 chat() 前执行，确保会话仍然有效
+        如果检测到 session 失效，触发重新登录流程
+        """
+        logger.debug("执行健康检查...")
+        
+        # 尝试定位输入框
+        input_found = False
+        for selector in config.gemini.input_selectors:
+            try:
+                element = self.page.locator(selector)
+                is_visible = await element.is_visible(timeout=3000)
+                is_enabled = await element.is_enabled()
+                
+                if is_visible and is_enabled:
+                    input_found = True
+                    logger.debug("✓ 健康检查通过")
+                    break
+            except Exception:
+                continue
+        
+        if not input_found:
+            logger.warning("⚠ 健康检查失败：未找到输入框")
+            logger.warning("可能的原因：session 失效或页面结构变化")
+            
+            # 检查是否仍然已登录
+            is_logged_in = await self._check_login_status_v11()
+            
+            if not is_logged_in:
+                logger.warning("检测到登录态失效，触发重新登录流程...")
+                await self._fallback_to_headful_login()
+            else:
+                logger.warning("输入框可能暂时不可用，继续尝试...")
+
     async def send_message(self, prompt: str) -> None:
         """
         发送消息到 Gemini
-        1. 定位输入框
-        2. 填入文本
-        3. 提交消息
+        1. 健康检查（v1.1 改进）
+        2. 定位输入框
+        3. 填入文本
+        4. 提交消息
         """
         if not self.page:
             raise BrowserException("页面未初始化")
 
         try:
+            # 健康检查（v1.1 改进）
+            await self._health_check()
+
             # 定位输入框（按优先级尝试）
             input_locator = None
             for selector in config.gemini.input_selectors:
