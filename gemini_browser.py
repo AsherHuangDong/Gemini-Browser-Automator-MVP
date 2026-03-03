@@ -124,6 +124,9 @@ class GeminiBrowser:
             # 启动浏览器
             launch_args = config.get_anti_detection_args()
 
+            logger.info(f"浏览器启动参数: {launch_args}")
+            logger.info(f"浏览器路径: {config.browser.browser_path or 'Playwright 自带的 Chromium'}")
+
             # 构建启动参数
             launch_kwargs = {
                 "headless": self.headless,
@@ -132,10 +135,13 @@ class GeminiBrowser:
 
             # 如果配置了浏览器路径，使用已安装的浏览器
             if config.browser.browser_path:
-                logger.debug(f"使用已安装的浏览器: {config.browser.browser_path}")
+                logger.info(f"✓ 使用已安装的浏览器: {config.browser.browser_path}")
                 launch_kwargs["executable_path"] = config.browser.browser_path
             else:
-                logger.debug("使用 Playwright 自带的 Chromium")
+                logger.info("✓ 使用 Playwright 自带的 Chromium")
+                logger.warning("⚠  Playwright 自带的 Chromium 可能不支持某些文件上传功能")
+                logger.warning("  建议：使用 --browser-path 参数指定已安装的浏览器（如 Chrome）")
+                logger.warning("  示例：python main.py interactive --browser-path \"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\"")
 
             self.browser = await self._playwright.chromium.launch(**launch_kwargs)
 
