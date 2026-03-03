@@ -576,8 +576,14 @@ class GeminiBrowser:
                     start_time = time.time()
                     logger.debug("尝试 MutationObserver 事件驱动方案...")
                     # 这里需要获取响应容器元素
-                    # 先尝试常用的选择器
+                    # 先尝试常用的选择器（与轮询方案保持一致）
                     response_selectors = [
+                        "[data-test-id='response-container']:last-of-type",
+                        "[data-test-id='model-response']:last-of-type",
+                        "[data-test-id*='response']:last-of-type",
+                        "model-response:last-of-type",
+                        "chat-turn:last-of-type",
+                        "response-container:last-of-type",
                         "structured-content-container.model-response-text:last-of-type",
                         "message-content:last-of-type",
                         "div.markdown.markdown-main-panel",
@@ -640,7 +646,18 @@ class GeminiBrowser:
             # 针对 Gemini 3 Flash 的新界面 - 查找聊天区域内的最新 AI 回复
             # KEY FIX: 优先在 main 标签内查找，避免选到侧边栏或菜单
             response_selectors = [
-                # 优先级 0: 根据实际 DOM 结构（2024 年后的 Gemini UI）
+                # 优先级 -1: data-test-id 属性（最可靠，Gemini Angular UI 广泛使用）
+                "[data-test-id='response-container']:last-of-type",
+                "[data-test-id='model-response']:last-of-type",
+                "[data-test-id='message-content']:last-of-type",
+                "[data-test-id*='response']:last-of-type",
+                "[data-test-id*='model']:last-of-type",
+                # 优先级 0: Angular 自定义组件名（Gemini UI）
+                "model-response:last-of-type",
+                "chat-turn:last-of-type",
+                "response-container:last-of-type",
+                "conversation-turn:last-of-type",
+                # 优先级 0.5: 根据实际 DOM 结构（2024 年后的 Gemini UI）
                 "structured-content-container.model-response-text:last-of-type",  # 新 UI 响应内容容器
                 "message-content:last-of-type",                                   # 消息内容组件
                 "div.markdown.markdown-main-panel",                               # 包含实际回复文本的 div
@@ -781,18 +798,20 @@ class GeminiBrowser:
 
                 try:
                     # 使用通用的 JavaScript 方法扫描所有包含文本的容器
+                    # 关键修复：找到元素后打上标记，使得 Playwright 可以通过选择器引用它
                     js_result = await self.page.evaluate('''() => {
+                        // 清除之前的标记
+                        document.querySelectorAll('[data-gemini-auto-found]').forEach(el => {
+                            el.removeAttribute('data-gemini-auto-found');
+                        });
+
                         const candidates = [];
 
-                        // 策略 1: 检查所有 div 元素，找最长的内容（排除系统消息）
-                        document.querySelectorAll('div, section, article').forEach((el) => {
+                        // 策略 1: 检查所有元素，找最小的叶子容器（最具体的匹配）
+                        document.querySelectorAll('div, section, article, p').forEach((el) => {
                             const text = el.innerText || '';
-                            const directText = el.childNodes
-                                .filter(node => node.nodeType === 3)
-                                .map(node => node.textContent)
-                                .join('');
 
-                            // 条件：足够长（>100字符），不是系统消息，不在菜单中
+                            // 条件：足够长（>100字符），不是系统消息，不在菜单/导航中
                             if (text.length > 100 &&
                                 !text.includes('成功执行') &&
                                 !text.includes('查询') &&
@@ -805,36 +824,69 @@ class GeminiBrowser:
                                     text: text,
                                     length: text.length,
                                     className: el.className,
+                                    tagName: el.tagName,
                                     dataAttrs: Object.keys(el.dataset).join(',')
                                 });
                             }
                         });
 
-                        // 按文本长度排序（最长的通常是最新的回复）
-                        candidates.sort((a, b) => b.length - a.length);
-
-                        if (candidates.length > 0) {
-                            // 返回前 3 个最长的候选
-                            return {
-                                found: true,
-                                candidates: candidates.slice(0, 3).map(c => ({
-                                    length: c.length,
-                                    className: c.className.substring(0, 80),
-                                    dataAttrs: c.dataAttrs,
-                                    text: c.text.substring(0, 100)
-                                })),
-                                best: {
-                                    length: candidates[0].length,
-                                    text: candidates[0].text.substring(0, 150)
-                                }
-                            };
+                        if (candidates.length === 0) {
+                            return { found: false };
                         }
 
-                        return { found: false };
+                        // 找出"叶子"候选：没有任何其他候选是其后代的元素
+                        // 这样可以找到最具体（最小）的容器，而不是整个聊天历史
+                        const leafCandidates = candidates.filter(c => {
+                            return !candidates.some(
+                                other => other !== c && c.element.contains(other.element)
+                            );
+                        });
+
+                        const pool = leafCandidates.length > 0 ? leafCandidates : candidates;
+
+                        // 按文本长度排序（降序），取最长的叶子（通常是最新回复）
+                        pool.sort((a, b) => b.length - a.length);
+                        const best = pool[0];
+
+                        // 给最佳候选打标记，让 Playwright 可以选中它
+                        best.element.setAttribute('data-gemini-auto-found', 'true');
+
+                        return {
+                            found: true,
+                            marked: true,
+                            candidates: pool.slice(0, 3).map(c => ({
+                                length: c.length,
+                                className: c.className.substring(0, 80),
+                                tagName: c.tagName,
+                                dataAttrs: c.dataAttrs,
+                                text: c.text.substring(0, 100)
+                            })),
+                            best: {
+                                length: best.length,
+                                text: best.text.substring(0, 150)
+                            }
+                        };
                     }''')
 
                     if js_result.get('found'):
-                        logger.debug(f"✓ 找到 {len(js_result.get('candidates', []))} 个可能的 AI 回复容器")
+                        logger.debug(f"✓ JavaScript 找到 {len(js_result.get('candidates', []))} 个候选容器")
+                        for i, c in enumerate(js_result.get('candidates', [])):
+                            logger.debug(f"  候选 #{i+1}: {c.get('tagName')} len={c.get('length')} class={c.get('className', '')[:60]} text={c.get('text', '')[:60]}")
+
+                        # 关键修复：使用标记的元素作为 Playwright 定位器
+                        if js_result.get('marked'):
+                            try:
+                                marked_selector = '[data-gemini-auto-found="true"]'
+                                marked_element = self.page.locator(marked_selector)
+                                if await marked_element.count() > 0:
+                                    text_content = await marked_element.inner_text()
+                                    if len(text_content) >= 30:
+                                        response_element = marked_element
+                                        response_selector = marked_selector
+                                        logger.debug(f"✓ 成功使用 JavaScript 标记的元素，长度: {len(text_content)}")
+                                        logger.debug(f"  预览: {text_content[:100].replace(chr(10), ' ')}...")
+                            except Exception as mark_e:
+                                logger.debug(f"使用标记元素失败: {mark_e}")
                     else:
                         logger.debug("✗ JavaScript 扫描也没有找到足够长的内容")
 
@@ -920,6 +972,22 @@ class GeminiBrowser:
                             });
                         });
 
+                        // 收集页面上所有 data-test-id 值（帮助识别正确的选择器）
+                        const testIds = new Set();
+                        document.querySelectorAll('[data-test-id]').forEach(el => {
+                            testIds.add(el.getAttribute('data-test-id'));
+                        });
+                        info.testIds = Array.from(testIds).slice(0, 30);
+
+                        // 收集页面上自定义组件名称（Angular/Web Components）
+                        const customTags = new Set();
+                        document.querySelectorAll('*').forEach(el => {
+                            if (el.tagName.includes('-')) {
+                                customTags.add(el.tagName.toLowerCase());
+                            }
+                        });
+                        info.customTags = Array.from(customTags).slice(0, 20);
+
                         return info;
                     }
                     """)
@@ -930,6 +998,8 @@ class GeminiBrowser:
                     logger.error(f"Region 数量: {len(page_info.get('regions', []))}")
                     if page_info.get('regions'):
                         logger.error(f"第一个 Region 信息: {page_info['regions'][0]}")
+                    logger.error(f"页面 data-test-id 值: {page_info.get('testIds', [])}")
+                    logger.error(f"页面自定义组件: {page_info.get('customTags', [])}")
 
                 except Exception as debug_error:
                     logger.error(f"调试获取详细信息失败: {debug_error}", exc_info=True)
