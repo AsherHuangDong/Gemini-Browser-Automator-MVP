@@ -67,7 +67,7 @@ def get_system_proxy() -> Optional[Dict[str, str]]:
 @dataclass
 class BrowserConfig:
     """浏览器配置"""
-    headless: bool = False
+    headless: bool = True  # v1.1 改进：默认使用 headless 模式
     profile_dir: str = "./profiles"
     timeout: int = 30
     retry_count: int = 3
@@ -230,11 +230,20 @@ class Config:
         """从命令行参数覆盖配置"""
         # v1.1 改进：处理 headless 和 no-headless 参数
         if hasattr(args, 'headless') and hasattr(args, 'no_headless'):
+            logger.info(f"参数值: headless={args.headless}, no_headless={args.no_headless}")
+            logger.info(f"BrowserConfig 默认值: headless={self.browser.headless}")
+            
             if args.headless:
                 self.browser.headless = True
+                logger.info("已显式设置 headless=True")
             elif args.no_headless:
                 self.browser.headless = False
-            # 如果都没有指定，使用 BrowserConfig 的默认值（True）
+                logger.info("已显式设置 headless=False")
+            else:
+                # 如果都没有指定，使用 BrowserConfig 的默认值（True）
+                logger.info("未指定 headless 参数，使用 BrowserConfig 默认值")
+            
+            logger.info(f"最终 headless 值: {self.browser.headless}")
 
         if hasattr(args, 'profile') and args.profile:
             self.browser.profile_dir = args.profile
