@@ -645,11 +645,20 @@ class GeminiBrowser:
                 "main div[class*='message']:last-of-type",              # main 中最后一条消息
                 "main > div:last-child",                                 # main 最后一个直接子元素
                 "main div[data-message-author-role='model']:last-of-type",  # main 中最后的 AI 消息
+                # 优先级1.5: 查找任何包含内容的 main 子元素（新增）
+                "main [role='presentation']:last-of-type",               # main 中最后一个 presentation 元素
+                "main div[class*='response']:last-of-type",              # main 中最后一个响应相关元素
                 # 优先级2: 查找明确是聊天消息的容器
                 "div[class*='conversation'] div[class*='message']:last-child",  # 对话中最后一条消息
                 "div[class*='chat'] div[class*='message']:last-of-type",  # 聊天区最后一条
+                # 优先级2.5: 通用选择器（新增）
+                "[data-message-author-role='assistant']:last-of-type",   # 助手消息
+                "[data-message-author-role='ai']:last-of-type",          # AI 消息
                 # 优先级3: 查找最后一条包含实际内容的消息
                 "div[data-message-author-role='model']:last-of-type",    # 最后的 AI 消息
+                # 优先级3.5: 最宽松的选择器（新增）
+                "main > div[class]:last-of-type",                        # main 中最后一个有 class 的 div
+                "main [class*='container']:last-of-type",                # main 中最后一个容器
                 # 优先级4: 备用方案（可能包含历史，需要过滤）
                 "div[class*='message-list'] > div:last-child",          # 消息列表最后一条
                 "div[data-message-author-role='model']",                # 标准 Gemini 数据属性
@@ -971,14 +980,14 @@ class GeminiBrowser:
 
                     # 重新尝试选择响应容器
                     retry_count = 0
-                    max_retries = 3
+                    max_retries = 5  # 增加重试次数（从 3 改为 5）
                     found_valid = False
 
                     while retry_count < max_retries and not found_valid:
                         retry_count += 1
                         logger.debug(f"重新选择响应容器（尝试 {retry_count}/{max_retries}）...")
 
-                        for idx, selector in enumerate(response_selectors[:5]):  # 只尝试前 5 个选择器
+                        for idx, selector in enumerate(response_selectors[:10]):  # 尝试更多选择器（从 5 改为 10）
                             try:
                                 elements = await self.page.locator(selector).all()
                                 if elements:
@@ -992,8 +1001,8 @@ class GeminiBrowser:
                                             logger.debug(f"跳过系统消息: {retry_text[:50]}...")
                                             continue
 
-                                        # 再次验证：需要足够长的内容
-                                        if len(retry_text) >= 30:
+                                        # 降低验证要求：只需要 10 个字符（从 30 改为 10）
+                                        if len(retry_text) >= 10:
                                             response_element = retry_element
                                             response_selector = selector
                                             logger.debug(f"✓ 重新选择成功！找到有效响应容器（选择器 #{idx+1}），长度: {len(retry_text)}")
@@ -1005,8 +1014,8 @@ class GeminiBrowser:
                         if found_valid:
                             break
                         elif retry_count < max_retries:
-                            logger.debug(f"等待 3 秒后继续重试...")
-                            await asyncio.sleep(3)
+                            logger.debug(f"等待 5 秒后继续重试...")
+                            await asyncio.sleep(5)  # 增加等待时间（从 3 改为 5）
 
                     # 如果重试后仍然无效，才抛出异常
                     if not found_valid:
@@ -1033,7 +1042,7 @@ class GeminiBrowser:
             no_change_count = 0
             max_no_change_cycles = 1  # ⚡⚡ 超激进：1 次检查无变化则认为完成（约 10ms）
             check_count = 0
-            max_checks = 600  # 最多检查 600 次 * 0.01s = 6 秒
+            max_checks = 3000  # 最多检查 3000 次 * 0.01s = 30 秒（增加超时时间）
 
             while check_count < max_checks:
                 check_count += 1
