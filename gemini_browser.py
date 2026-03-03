@@ -1311,6 +1311,10 @@ class GeminiBrowser:
         Returns:
             上传操作结果字典
         """
+        # 将 file_path 转换为 Path 对象
+        from pathlib import Path
+        file_path_obj = Path(file_path)
+        
         try:
             logger.debug("正在执行文件上传...")
 
