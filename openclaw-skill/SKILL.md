@@ -1,7 +1,7 @@
 ---
 name: gemini-browser-automator
-description: 使用 Playwright 自动化与 Google Gemini 聊天，支持持久化登录、流式输出、文件上传、自动代理检测、默认 headless 模式和性能优化
-version: 1.2.0
+description: 使用 Playwright 自动化与 Google Gemini 聊天，支持持久化登录、流式输出、文件上传、自动代理检测、默认 headless 模式、性能优化和持续模式
+version: 1.3.0
 type: skill
 tools:
   bash:
@@ -23,6 +23,7 @@ tools:
 - **智能登录检测**：严格的登录检查，自动处理登录态失效
 - **自动代理检测**：自动检测并使用系统代理，无需手动配置
 - **性能优化**：登录检查速度提升 50-70%，快速进入对话
+- **持续模式**：支持在 OpenClaw 等场景中持续使用，无需重复启动
 - **流式输出**：实时逐字打印 Gemini 生成的回复
 - **文件上传**：支持上传图片、PDF、文本、视频、数据文件
 - **自动重试**：超时、网络错误、浏览器崩溃自动恢复
@@ -272,6 +273,22 @@ type logs\gemini.log
   - 导航后：从 5 秒减少到 2 秒
   - networkidle 超时：从 10 秒减少到 5 秒
 - **总体提升**：从启动到开始对话的时间缩短约 60%
+
+## v1.3 持续模式亮点
+
+- **KEEP_BROWSER_OPEN 支持**：新增环境变量控制是否关闭浏览器
+- **OpenClaw 优化**：在 OpenClaw 中使用时可以持续对话，无需重复启动
+- **异常恢复**：异常发生时继续运行而不是退出
+- **使用方式**：
+  ```bash
+  # Windows
+  set KEEP_BROWSER_OPEN=true
+  python main.py interactive
+  
+  # Linux/Mac
+  export KEEP_BROWSER_OPEN=true
+  python main.py interactive
+  ```
 
 ## 注意事项
 
