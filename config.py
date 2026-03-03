@@ -277,11 +277,11 @@ class Config:
             # 移除了可能影响文件上传的参数，添加文件上传支持
             return [
                 "--disable-blink-features=AutomationControlled",
-                # "--disable-dev-shm-usage",  # 可能导致某些问题，先注释掉
+                "--disable-dev-shm-usage",  # 可能导致某些问题，先注释掉
                 "--no-first-run",
                 "--no-default-browser-check",
-                # "--disable-extensions",  # 移除：可能影响文件上传
-                # "--disable-component-extensions-with-background-pages",  # 移除：可能影响文件上传
+                "--disable-extensions",  # 移除：可能影响文件上传
+                "--disable-component-extensions-with-background-pages",  # 移除：可能影响文件上传
                 "--allow-file-access-from-files",  # 添加：允许文件访问
                 "--disable-features=VizDisplayCompositor",  # 添加：可能提高稳定性
                 f"--lang={self.browser.language}",
