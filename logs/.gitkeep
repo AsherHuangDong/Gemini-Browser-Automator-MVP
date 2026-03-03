@@ -1,0 +1,4 @@
+python main.py interactive
+
+# 上传文件
+[Gemini] >> /upload E:/material/images/1.jpg

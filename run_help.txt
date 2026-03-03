@@ -1,0 +1,1 @@
+cd d:\tools\Gemini-Browser-Automator-MVP && python main.py --help

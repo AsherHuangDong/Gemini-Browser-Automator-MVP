@@ -1,0 +1,218 @@
+"""
+Gemini 浏览器自动化 - 配置管理
+"""
+
+import argparse
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List, Dict, Optional
+import os
+from dotenv import load_dotenv
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BrowserConfig:
+    """浏览器配置"""
+    headless: bool = False
+    profile_dir: str = "./profiles"
+    timeout: int = 30
+    retry_count: int = 3
+    check_interval: float = 0.3
+    language: str = "zh-CN"
+    timezone: str = "Asia/Tokyo"
+    # 浏览器路径配置（如果为 None，使用 Playwright 自带的 Chromium）
+    browser_path: Optional[str] = None  # 例如：r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+
+
+@dataclass
+class GeminiConfig:
+    """Gemini 相关配置"""
+    base_url: str = "https://gemini.google.com"
+    response_timeout: int = 300  # 响应最长等待时间（秒）
+
+    # DOM 选择器配置
+    input_selectors: List[str] = None
+
+    # 文件上传配置（新增）
+    upload_button_selectors: List[str] = None
+    file_input_selectors: List[str] = None
+    upload_complete_selectors: List[str] = None
+    upload_timeout: int = 30  # 文件上传超时（秒）
+    upload_retry_count: int = 2  # 文件上传重试次数
+
+    # 文件大小限制（字节）
+    max_file_sizes: Dict[str, int] = None
+
+    # 支持的文件类型
+    supported_file_types: Dict[str, List[str]] = None
+
+    def __post_init__(self):
+        if self.input_selectors is None:
+            self.input_selectors = [
+                'div[role="textbox"]',                    # 最可靠
+                'textarea[placeholder*="Ask Gemini"]',    # 备用
+                'rich-textarea',                          # 最后备用
+            ]
+
+# 上传按钮选择器（优先级排列）
+        if self.upload_button_selectors is None:
+            self.upload_button_selectors = [
+                # 第 1 层：data-test-id（最可靠）
+                'button[data-test-id="hidden-local-file-upload-button"]',
+                'button[data-test-id="hidden-local-image-upload-button"]',
+                # 第 2 层：aria-label
+                'button[aria-label*="打开文件上传菜单"]',
+                'button[aria-label*="upload file"]',
+                'button[aria-label*="上传文件"]',
+                'button[aria-label*="Upload file"]',
+                'button[aria-label*="上传"]',
+                'button[aria-label*="Upload"]',
+                'button[aria-label*="attach"]',
+                'button[aria-label*="Attach"]',
+                'button[aria-label*="附加"]',
+                'button[aria-label*="image"]',
+                'button[aria-label*="Image"]',
+                'button[aria-label*="file"]',
+                'button[aria-label*="File"]',
+                # 第 3 层：class 属性
+                'button[class*="upload-button"]',
+                'button[class*="upload-card-button"]',
+                'button[class*="uploader"]',
+                'button[class*="attach"]',
+                'button[class*="Attach"]',
+                'button[class*="image"]',
+                'button[class*="Image"]',
+                'button[class*="file"]',
+                'button[class*="File"]',
+                'button[class*="clip"]',
+                'button[mat-icon-button]',
+                # 第 4 层：通用选择器
+                'div[class*="uploader-button-container"] button',
+                'div[class*="file-uploader"] button',
+            ]
+
+        # 文件输入框选择器（隐藏的 input[type="file"]）
+        if self.file_input_selectors is None:
+            self.file_input_selectors = [
+                'input[type="file"]',
+                'input[type="file"][accept*="image"]',
+                'input[type="file"][accept*="pdf"]',
+                'input[class*="upload"]',
+            ]
+
+        # 上传完成标志选择器
+        if self.upload_complete_selectors is None:
+            self.upload_complete_selectors = [
+                # 图片预览相关
+                'img[alt*="preview"]',
+                'img[alt*="Preview"]',
+                'img[class*="preview"]',
+                'img[class*="Preview"]',
+                'img[class*="thumbnail"]',
+                'img[class*="Thumbnail"]',
+                # 文件名显示相关
+                'div[class*="filename"]',
+                'div[class*="file-name"]',
+                'span[class*="filename"]',
+                'span[class*="file-name"]',
+                # 附件相关
+                '[class*="attachment"]',
+                '[class*="Attachment"]',
+                '[class*="attached-file"]',
+                '[class*="attached"]',
+                # 发送按钮可用（表示文件已准备好）
+                'button[aria-label*="Send"]:not([disabled])',
+                'button[aria-label*="发送"]:not([disabled])',
+                # 其他可能的标志
+                '[class*="upload-complete"]',
+                '[class*="file-loaded"]',
+            ]
+
+        # 文件大小限制（单位：字节）
+        if self.max_file_sizes is None:
+            self.max_file_sizes = {
+                'image': 20 * 1024 * 1024,    # 20 MB
+                'pdf': 50 * 1024 * 1024,      # 50 MB
+                'text': 10 * 1024 * 1024,     # 10 MB
+                'video': 100 * 1024 * 1024,   # 100 MB
+                'data': 20 * 1024 * 1024,     # 20 MB
+            }
+
+        # 支持的文件类型
+        if self.supported_file_types is None:
+            self.supported_file_types = {
+                'image': ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'],
+                'pdf': ['.pdf'],
+                'text': ['.txt', '.doc', '.docx', '.md'],
+                'video': ['.mp4', '.webm', '.mov', '.avi', '.mkv'],
+                'data': ['.csv', '.json', '.xlsx', '.xls'],
+            }
+
+
+class Config:
+    """统一配置管理"""
+
+    def __init__(self):
+        load_dotenv()
+        self.browser = BrowserConfig(
+            browser_path=os.getenv("BROWSER_PATH")
+        )
+        self.gemini = GeminiConfig()
+        self._validate_profile_dir()
+
+    def _validate_profile_dir(self):
+        """验证并创建 Profile 目录"""
+        profile_path = Path(self.browser.profile_dir)
+        profile_path.mkdir(parents=True, exist_ok=True)
+
+    def from_args(self, args: argparse.Namespace) -> None:
+        """从命令行参数覆盖配置"""
+        if hasattr(args, 'headless') and args.headless:
+            self.browser.headless = args.headless
+
+        if hasattr(args, 'profile') and args.profile:
+            self.browser.profile_dir = args.profile
+            self._validate_profile_dir()
+
+        if hasattr(args, 'timeout') and args.timeout:
+            self.browser.timeout = args.timeout
+            self.gemini.response_timeout = args.timeout * 10  # 响应超时更长
+
+        if hasattr(args, 'retry') and args.retry:
+            self.browser.retry_count = args.retry
+
+        if hasattr(args, 'browser_path') and args.browser_path:
+            self.browser.browser_path = args.browser_path
+            logger.debug(f"已配置使用已安装的浏览器: {args.browser_path}")
+
+        if hasattr(args, 'retry') and args.retry:
+            self.browser.retry_count = args.retry
+
+    def get_anti_detection_args(self) -> List[str]:
+        """获取反检测启动参数"""
+        # 对于已安装的浏览器，使用更少的启动参数，避免影响文件上传
+        if self.browser.browser_path:
+            return [
+                "--no-first-run",
+                "--no-default-browser-check",
+                f"--lang={self.browser.language}",
+            ]
+        else:
+            # Playwright 自带的 Chromium，使用完整的反检测参数
+            return [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-extensions",
+                "--disable-component-extensions-with-background-pages",
+                f"--lang={self.browser.language}",
+            ]
+
+
+# 全局配置实例
+config = Config()
