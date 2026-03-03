@@ -66,7 +66,29 @@ python main.py interactive --headless false
 - 只在登录失效时短暂弹出浏览器，手动确认后又恢复长期 headless
 - 自动检测并使用系统代理（如 127.0.0.1:15715）
 
-### 3. 文件上传
+### 3. 在 OpenClaw 中使用（持续模式）
+
+在 OpenClaw 中使用时，需要设置环境变量来保持浏览器打开，避免每次回答后都重新启动：
+
+```bash
+# Windows
+set KEEP_BROWSER_OPEN=true
+python main.py interactive
+
+# Linux/Mac
+export KEEP_BROWSER_OPEN=true
+python main.py interactive
+
+# 或者在 .env 文件中设置
+echo "KEEP_BROWSER_OPEN=true" >> .env
+```
+
+**注意**：
+- `KEEP_BROWSER_OPEN=true` 时，程序结束后不会关闭浏览器
+- 这样可以在 OpenClaw 中持续使用，无需每次重新启动
+- 如果不再使用，可以手动关闭浏览器或删除 `.env` 中的设置
+
+### 4. 文件上传
 
 在交互模式中使用 `/upload` 命令：
 

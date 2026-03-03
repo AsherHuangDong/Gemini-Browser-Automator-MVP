@@ -60,6 +60,9 @@ class GeminiCLI:
             check_interval=config.browser.check_interval,
         )
 
+        # 检查是否应该保持浏览器打开（用于 OpenClaw 等场景）
+        self.keep_browser_open = os.getenv("KEEP_BROWSER_OPEN", "false").lower() == "true"
+
     async def run_interactive(self) -> None:
         """
         交互模式主循环
@@ -141,9 +144,15 @@ class GeminiCLI:
                     break
                 except BrowserException as e:
                     logger.error(f"浏览器异常: {e}")
+                    if self.keep_browser_open:
+                        print("\n⚠️ 浏览器异常，但保持浏览器打开以继续使用")
+                        continue
                     break
                 except Exception as e:
                     logger.error(f"未预期的异常: {e}", exc_info=True)
+                    if self.keep_browser_open:
+                        print("\n⚠️ 发生异常，但保持浏览器打开以继续使用")
+                        continue
                     break
 
         except LoginRequiredException as e:
@@ -435,11 +444,13 @@ async def main():
         logger.error(f"程序异常: {e}", exc_info=True)
     finally:
         # 清理资源
-        if cli.browser:
+        if cli.browser and not cli.keep_browser_open:
             try:
                 await cli.browser.close()
             except Exception as e:
                 logger.error(f"关闭浏览器失败: {e}")
+        elif cli.browser and cli.keep_browser_open:
+            logger.info("保持浏览器打开（KEEP_BROWSER_OPEN=true）")
 
         logger.debug("程序已退出")
 
