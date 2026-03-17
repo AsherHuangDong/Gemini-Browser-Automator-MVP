@@ -41,7 +41,7 @@ env/
 
 # Project Specific
 profiles/storage_state.json
-logs/*.log
+logs/*
 *.log
 
 # Environment Variables
