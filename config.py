@@ -205,6 +205,79 @@ class GeminiConfig:
             }
 
 
+def load_api_keys_file(file_path: str = "api_keys.txt", silent: bool = False) -> List[str]:
+    """
+    从文件加载 API Keys
+    
+    Args:
+        file_path: API Keys 配置文件路径
+        silent: 是否静默模式（不打印警告）
+        
+    Returns:
+        API Key 列表（已过滤空行和注释）
+    """
+    keys = []
+    path = Path(file_path)
+    
+    if not path.exists():
+        if not silent:
+            logger.debug(f"API Keys 文件不存在: {file_path}")
+        return keys
+    
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            # 跳过空行和注释
+            if not line or line.startswith('#'):
+                continue
+            keys.append(line)
+    
+    if keys:
+        logger.info(f"从 {file_path} 加载了 {len(keys)} 个 API Key")
+    return keys
+
+
+@dataclass
+class APIConfig:
+    """API 模式配置"""
+    # API Keys 配置
+    api_keys: List[str] = None
+    api_keys_file: str = "api_keys.txt"
+    _keys_loaded: bool = field(default=False, repr=False)  # 内部标记
+    
+    # Key 轮换策略
+    rotation_strategy: str = "round_robin"  # round_robin / least_errors / random
+    
+    # 健康检查配置
+    error_threshold: int = 3        # 连续错误多少次标记为不健康
+    cooldown_seconds: int = 60      # 冷却时间（秒）
+    max_key_retries: int = 3        # 每个 Key 最大重试次数
+    
+    # API 请求配置
+    model: str = "gemini-2.5-flash"
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    timeout: int = 60               # 请求超时（秒）
+    max_retries: int = 3            # 总体最大重试次数
+    
+    # 流式输出
+    stream: bool = True
+    
+    def ensure_keys_loaded(self) -> None:
+        """确保 API Keys 已加载（延迟加载）"""
+        if not self._keys_loaded and self.api_keys is None:
+            self.api_keys = load_api_keys_file(self.api_keys_file)
+            self._keys_loaded = True
+            if not self.api_keys:
+                logger.warning("未配置任何 API Key，API 模式将无法使用")
+    
+    def get_masked_keys(self) -> List[str]:
+        """获取脱敏后的 Key 列表（用于日志）"""
+        self.ensure_keys_loaded()
+        if not self.api_keys:
+            return []
+        return [f"{k[:8]}...{k[-4:]}" if len(k) > 12 else "***" for k in self.api_keys]
+
+
 class Config:
     """统一配置管理"""
 
@@ -213,11 +286,21 @@ class Config:
         
         # 自动获取系统代理
         proxy = get_system_proxy()
+        if os.getenv("GEMINI_NO_PROXY") == "1":
+            proxy = None
         
         self.browser = BrowserConfig(
             proxy=proxy
         )
         self.gemini = GeminiConfig()
+        
+        # API 配置
+        self.api = APIConfig(
+            api_keys_file=os.getenv("API_KEYS_FILE", "api_keys.txt"),
+            model=os.getenv("API_MODEL", "gemini-2.5-flash"),
+            timeout=int(os.getenv("API_TIMEOUT", "60")),
+        )
+        
         self._validate_profile_dir()
 
     def _validate_profile_dir(self):
@@ -276,6 +359,24 @@ class Config:
 
         if hasattr(args, 'retry') and args.retry:
             self.browser.retry_count = args.retry
+
+        # API 模式配置
+        if hasattr(args, 'model') and args.model:
+            self.api.model = args.model
+            logger.debug(f"API 模型: {args.model}")
+
+        if hasattr(args, 'keys_file') and args.keys_file:
+            self.api.api_keys_file = args.keys_file
+            self.api.api_keys = load_api_keys_file(args.keys_file)
+            logger.debug(f"API Keys 文件: {args.keys_file}")
+
+        if hasattr(args, 'keys') and args.keys:
+            # 命令行直接传入的 keys（逗号分隔）
+            self.api.api_keys = [k.strip() for k in args.keys.split(',')]
+            logger.debug(f"从命令行加载 {len(self.api.api_keys)} 个 API Key")
+
+        if hasattr(args, 'api_timeout') and args.api_timeout:
+            self.api.timeout = args.api_timeout
 
     def get_anti_detection_args(self) -> List[str]:
         """获取反检测启动参数"""

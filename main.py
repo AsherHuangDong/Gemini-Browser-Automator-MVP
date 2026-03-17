@@ -1,5 +1,6 @@
 """
-Gemini 浏览器自动化 MVP - CLI 入口
+Gemini 自动化工具 - CLI 入口
+默认使用 API 模式，支持多 Key 循环容灾
 """
 
 import asyncio
@@ -8,17 +9,16 @@ import argparse
 import sys
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 
 from gemini_browser import GeminiBrowser
+from gemini_api import GeminiAPIClient, APIKeyPool
 from exceptions import (
     LoginRequiredException,
     BrowserException,
-    FileUploadException,
-    FileNotFoundError as FileNotFoundError_custom,
-    FileSizeError,
-    FileTypeError,
-    FileUploadError,
+    APIException,
+    APIKeyNotFoundError,
+    AllKeysExhaustedError,
 )
 from config import config
 
@@ -26,10 +26,8 @@ from config import config
 # 确保日志目录存在
 Path("logs").mkdir(parents=True, exist_ok=True)
 
-# 配置日志（Windows 使用 GBK，其他系统使用 UTF-8）
-import sys
+# 配置日志
 file_encoding = "gbk" if sys.platform == "win32" else "utf-8"
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -42,17 +40,197 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class GeminiCLI:
-    """CLI 交互控制器"""
+# ============================================================================
+# API 模式（默认）
+# ============================================================================
+
+class GeminiAPICLI:
+    """API 模式 CLI 交互控制器"""
+
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
+        self.client: Optional[GeminiAPIClient] = None
+        self.key_pool: Optional[APIKeyPool] = None
+        self.uploaded_files: List[Dict] = []
+
+        config.from_args(args)
+        config.api.ensure_keys_loaded()
+
+        if not config.api.api_keys:
+            raise APIKeyNotFoundError(
+                "未配置 API Key。请通过以下方式之一提供：\n"
+                "  1. 创建 api_keys.txt 文件（每行一个 Key）\n"
+                "  2. 使用 --keys 参数传入\n"
+                "  3. 从 https://aistudio.google.com/apikey 获取 Key"
+            )
+
+        self.key_pool = APIKeyPool(
+            keys=config.api.api_keys,
+            strategy=config.api.rotation_strategy,
+            error_threshold=config.api.error_threshold,
+            cooldown_seconds=config.api.cooldown_seconds,
+        )
+
+        self.client = GeminiAPIClient(
+            key_pool=self.key_pool,
+            config=config.api,
+        )
+
+    def run_interactive(self) -> None:
+        """交互模式"""
+        logger.debug("开始 API 交互模式")
+        print("\n" + "=" * 60)
+        print("Gemini API 模式")
+        print("=" * 60)
+        print(f"模型: {config.api.model}")
+        print(f"可用 Key 数: {len(config.api.api_keys)}")
+        print("提示: 输入 'exit' 退出，/help 查看命令")
+        print("=" * 60 + "\n")
+
+        while True:
+            try:
+                prompt = input("\n[Gemini] >> ").strip()
+
+                if prompt.lower() in ["exit", "quit"]:
+                    break
+                if not prompt:
+                    continue
+                if prompt.startswith("/status"):
+                    self._print_pool_status()
+                    continue
+                if prompt.startswith("/help"):
+                    self._print_help()
+                    continue
+                if prompt.startswith("/upload "):
+                    self._handle_upload(prompt[8:].strip())
+                    continue
+                if prompt.startswith("/files"):
+                    self._list_files()
+                    continue
+
+                logger.debug(f"用户输入: {prompt[:50]}...")
+                print("\n[Gemini] 正在生成回复...\n")
+
+                if self.uploaded_files:
+                    last_file = self.uploaded_files[-1]
+                    response = self.client.chat_with_file(
+                        prompt=prompt,
+                        file_uri=last_file.get("file_uri"),
+                    )
+                else:
+                    response = self.client.stream_chat(prompt)
+
+                logger.debug(f"回复完成，长度: {len(response)}")
+
+            except KeyboardInterrupt:
+                break
+            except AllKeysExhaustedError as e:
+                logger.error(f"所有 Key 不可用: {e}")
+                print(f"\n✗ 错误: {e}")
+            except APIException as e:
+                logger.error(f"API 异常: {e}")
+                print(f"\n✗ API 错误: {e}")
+            except Exception as e:
+                logger.error(f"未预期的异常: {e}", exc_info=True)
+                print(f"\n✗ 错误: {e}")
+
+    def run_single_query(self, query: str, file_path: str = None) -> None:
+        """单次查询（可选文件）"""
+        logger.debug(f"发送查询: {query[:50] if query else ''}...")
+        
+        if file_path:
+            print(f"\n[Gemini] 正在上传文件...")
+        
+        print("\n[Gemini] 正在生成回复...\n")
+        try:
+            if file_path:
+                # 直接传入 file_path，让 chat_with_file 在同一个 key 下完成上传和发送
+                result = self.client.chat_with_file(prompt=query or "分析这个文件", file_path=file_path)
+                if result:
+                    print(result)
+            else:
+                self.client.stream_chat(query)
+            print()
+        except AllKeysExhaustedError as e:
+            logger.error(f"所有 Key 不可用: {e}")
+            print(f"\n✗ 错误: {e}")
+
+    def _handle_upload(self, file_path: str) -> None:
+        if not file_path:
+            print("✗ 错误: 请指定文件路径")
+            return
+        try:
+            print(f"\n[Gemini] 正在上传文件: {file_path}")
+            result = self.client.upload_file(file_path)
+            if result.get("success"):
+                self.uploaded_files.append(result)
+                print(f"\n✓ {result['message']}")
+                print(f"  文件名: {result['file_name']}")
+                print(f"  文件 URI: {result['file_uri']}")
+                print("\n提示: 文件已上传，可直接提问")
+            else:
+                print(f"\n✗ 上传失败")
+
+        except FileNotFoundError:
+            print(f"\n✗ 文件不存在: {file_path}")
+        except Exception as e:
+            logger.error(f"上传失败: {e}")
+            print(f"\n✗ 上传失败: {e}")
+
+    def _list_files(self) -> None:
+        print("\n" + "-" * 50)
+        print("已上传的文件")
+        print("-" * 50)
+        if not self.uploaded_files:
+            print("（暂无）")
+        else:
+            for i, f in enumerate(self.uploaded_files, 1):
+                print(f"  {i}. {f['file_name']}")
+        print("-" * 50)
+
+    def _print_pool_status(self) -> None:
+        status = self.key_pool.get_pool_status()
+        print("\n" + "-" * 50)
+        print("API Key 池状态")
+        print("-" * 50)
+        print(f"总 Key 数: {status['total_keys']}")
+        print(f"可用 Key 数: {status['available_count']}")
+        print("\nKey 详情:")
+        for key_info in status['keys']:
+            print(f"  {key_info['key_hint']}: {key_info['status']} "
+                  f"(错误: {key_info['error_count']}, 成功: {key_info['success_count']})")
+        print("-" * 50)
+
+    def _print_help(self) -> None:
+        print("""
+【命令帮助】
+  exit, quit         - 退出程序
+  /help              - 显示帮助
+  /status            - 查看 Key 池状态
+  /upload <path>     - 上传文件
+  /files             - 列出已上传文件
+""")
+
+    def run(self) -> None:
+        query = getattr(self.args, 'query', None)
+        file_path = getattr(self.args, 'file', None)
+        if query or file_path:
+            self.run_single_query(query or "分析这个文件", file_path)
+        else:
+            self.run_interactive()
+
+
+# ============================================================================
+# 浏览器模式
+# ============================================================================
+
+class GeminiBrowserCLI:
+    """浏览器模式 CLI"""
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.browser: Optional[GeminiBrowser] = None
-
-        # 应用命令行配置
         config.from_args(args)
-
-        # 创建浏览器实例
         self.browser = GeminiBrowser(
             headless=config.browser.headless,
             profile_dir=config.browser.profile_dir,
@@ -60,409 +238,155 @@ class GeminiCLI:
             retry_count=config.browser.retry_count,
             check_interval=config.browser.check_interval,
         )
-
-        # 检查是否应该保持浏览器打开（用于 OpenClaw 等场景）
         self.keep_browser_open = os.getenv("KEEP_BROWSER_OPEN", "false").lower() == "true"
 
     async def run_interactive(self) -> None:
-        """
-        交互模式主循环
-
-        1. 初始化并启动浏览器
-        2. 提示用户登录（如需要）
-        3. REPL 循环：
-           - 接收用户输入
-           - 发送消息并流式输出回复
-           - 循环直到用户退出
-        4. 优雅关闭
-        """
         try:
-            # 启动浏览器
             await self.browser.launch()
+            await self.browser.ensure_logged_in()
 
-            # 确保已登录
-            try:
-                await self.browser.ensure_logged_in()
-            except LoginRequiredException as e:
-                logger.error(f"登录失败: {e}")
-                return
-
-            logger.debug("开始交互模式，输入 'exit' 或 'quit' 退出")
             print("\n" + "=" * 60)
-            print("Gemini 浏览器自动化 MVP")
+            print("Gemini 浏览器模式")
             print("=" * 60)
-            print("提示: 输入 'exit' 或 'quit' 退出")
+            print("提示: 输入 'exit' 退出")
             print("=" * 60 + "\n")
 
-            # 交互循环
             while True:
                 try:
                     prompt = input("\n[Gemini] >> ").strip()
-
-                    # 检查退出命令
                     if prompt.lower() in ["exit", "quit"]:
-                        logger.debug("用户主动退出")
                         break
-
-                    # 空输入则继续
                     if not prompt:
                         continue
-
-                    # 命令分派：检查是否为特殊命令
                     if prompt.startswith("/upload "):
-                        # 处理文件上传命令
-                        file_path = prompt[8:].strip()
-                        if not file_path:
-                            print("✗ 错误: 请指定文件路径")
-                            print("  用法: /upload <file_path>")
-                            continue
-
-                        await self._handle_upload_command(file_path)
+                        await self._handle_upload(prompt[8:].strip())
                         continue
-
-                    # 检查帮助命令
                     if prompt.startswith("/help"):
-                        self._print_help()
+                        print("exit - 退出, /upload <path> - 上传文件")
                         continue
 
-                    # 检查保存登录态命令
-                    if prompt.startswith("/save"):
-                        try:
-                            await self.browser._save_login_state()
-                            print("✓ 登录态已保存")
-                        except Exception as e:
-                            print(f"✗ 保存失败: {e}")
-                        continue
-
-                    # 普通聊天消息
-                    logger.debug(f"用户输入: {prompt[:50]}...")
                     response = await self.browser.chat(prompt)
-
-                    logger.debug(f"回复已生成，长度: {len(response)}")
-
                 except KeyboardInterrupt:
-                    logger.debug("捕获到键盘中断")
                     break
                 except BrowserException as e:
                     logger.error(f"浏览器异常: {e}")
-                    if self.keep_browser_open:
-                        print("\n⚠️ 浏览器异常，但保持浏览器打开以继续使用")
-                        continue
-                    break
-                except Exception as e:
-                    logger.error(f"未预期的异常: {e}", exc_info=True)
-                    if self.keep_browser_open:
-                        print("\n⚠️ 发生异常，但保持浏览器打开以继续使用")
-                        continue
-                    break
-
-        except LoginRequiredException as e:
-            logger.error(f"登录失败: {e}")
-        except KeyboardInterrupt:
-            logger.debug("捕获到键盘中断")
+                    if not self.keep_browser_open:
+                        break
         except Exception as e:
-            logger.error(f"交互模式异常: {e}", exc_info=True)
+            logger.error(f"错误: {e}")
 
-    async def run_single_query(self, query: str) -> None:
-        """
-        单次查询模式
-
-        1. 启动浏览器
-        2. 发送查询
-        3. 打印完整回复
-        4. 关闭浏览器
-        """
+    async def run_single_query(self, query: str, file_path: str = None) -> None:
         try:
-            # 启动浏览器
             await self.browser.launch()
-
-            # 确保已登录
-            try:
-                await self.browser.ensure_logged_in()
-            except LoginRequiredException as e:
-                logger.error(f"登录失败: {e}")
-                return
-
-            # 发送查询
-            logger.debug(f"发送查询: {query[:50]}...")
+            await self.browser.ensure_logged_in()
+            
+            if file_path:
+                await self._handle_upload(file_path)
+            
             print("\n[Gemini] 正在生成回复...")
-            response = await self.browser.chat(query)
-
-            print("\n" + "=" * 60)
-            logger.debug(f"查询完成，回复长度: {len(response)}")
-
-        except LoginRequiredException as e:
-            logger.error(f"登录失败: {e}")
+            await self.browser.chat(query or "分析这个文件")
         except Exception as e:
-            logger.error(f"单次查询异常: {e}", exc_info=True)
+            logger.error(f"错误: {e}")
 
-    async def _handle_upload_command(self, file_path: str) -> None:
-        """
-        处理 /upload 命令 (改进版本，增强日志和错误建议)
-
-        Args:
-            file_path: 用户指定的文件路径
-        """
+    async def _handle_upload(self, file_path: str) -> None:
+        if not file_path:
+            print("✗ 错误: 请指定文件路径")
+            return
         try:
-            print("\n[Gemini] 正在上传文件...")
-            logger.debug(f"开始处理上传命令: {file_path}")
-
             result = await self.browser.upload_file(file_path)
-
             if result['success']:
-                print(f"\n✓ {result['message']}")
-                print(f"  文件类型: {result['file_type']}")
-                print(f"  文件大小: {result['file_size_mb']:.2f} MB")
-                print(f"  上传耗时: {result['upload_time']:.2f} 秒")
-
-                if result['ready_for_chat']:
-                    print("\n提示: 文件上传完成，现在可以继续聊天。")
-                    print("  例如: '分析这个文件' 或 '这是什么?'")
-
-                logger.debug(f"文件上传成功: {result['file_name']}")
-
-            else:
-                print(f"\n✗ 文件上传失败: {result.get('message', '未知错误')}")
-                logger.error(f"文件上传失败: {result['message']}")
-                # 提供调试建议
-                print("\n调试建议:")
-                print("  1. 检查浏览器是否仍在运行")
-                print("  2. 确认已登录 Gemini")
-                print("  3. 尝试刷新页面或重新启动程序")
-
-        except FileNotFoundError_custom as e:
-            print(f"\n✗ 文件不存在: {e}")
-            logger.error(f"文件不存在: {e}")
-            print("\n提示: 请检查文件路径是否正确")
-
-        except FileSizeError as e:
-            print(f"\n✗ 文件过大: {e}")
-            logger.error(f"文件过大: {e}")
-            print("\n提示: 请检查文件大小是否超过限制")
-
-        except FileTypeError as e:
-            print(f"\n✗ 不支持的文件类型: {e}")
-            logger.error(f"不支持的文件类型: {e}")
-            print("\n支持的文件类型:")
-            print("  - 图片: jpg, jpeg, png, gif, webp, bmp (最大 20MB)")
-            print("  - PDF: pdf (最大 50MB)")
-            print("  - 文本: txt, doc, docx, md (最大 10MB)")
-            print("  - 视频: mp4, webm, mov, avi, mkv (最大 100MB)")
-            print("  - 数据: csv, json, xlsx, xls (最大 20MB)")
-
-        except FileUploadError as e:
-            print(f"\n✗ 上传失败: {e}")
-            logger.error(f"上传失败: {e}")
-            print("\n故障排除:")
-            print("  1. 检查网络连接")
-            print("  2. 尝试上传小文件测试")
-            print("  3. 查看日志了解详细错误: tail -f logs/gemini.log")
-
-        except BrowserException as e:
-            print(f"\n✗ 浏览器异常: {e}")
-            logger.error(f"浏览器异常: {e}")
-            print("\n提示: 请检查浏览器是否仍在运行")
-
+                print(f"\n✓ 文件上传成功: {result['file_name']}")
         except Exception as e:
-            print(f"\n✗ 未预期的错误: {e}")
-            logger.error(f"未预期的错误: {e}", exc_info=True)
-            print("\n请检查日志文件获取更多信息")
-
-    def _print_help(self) -> None:
-        """打印帮助信息"""
-        help_text = """
-╔═══════════════════════════════════════════════════════════════╗
-║           Gemini 浏览器自动化 MVP - 命令帮助                    ║
-╚═══════════════════════════════════════════════════════════════╝
-
-【基本命令】
-  exit, quit         - 退出程序
-  /help              - 显示此帮助信息
-  /save              - 手动保存登录态（用于备份登录状态）
-
-【文件上传】
-  /upload <path>     - 上传文件到 Gemini
-                       支持的文件类型:
-                       - 图片: jpg, jpeg, png, gif, webp, bmp
-                       - PDF: pdf
-                       - 文本: txt, doc, docx, md
-                       - 视频: mp4, webm, mov, avi, mkv
-                       - 数据: csv, json, xlsx, xls
-
-                       文件大小限制:
-                       - 图片: 20 MB
-                       - PDF: 50 MB
-                       - 文本: 10 MB
-                       - 视频: 100 MB
-                       - 数据: 20 MB
-
-【使用示例】
-  /upload ./image.jpg
-  /upload ~/Downloads/document.pdf
-  /upload "C:\\Users\\name\\Desktop\\data.csv"
-
-【上传后】
-  上传完成后，可以直接提问关于文件的内容:
-  - "分析这个图片"
-  - "总结这个文档"
-  - "这个数据显示了什么?"
-
-【提示】
-  - 首次运行需要手动登录，登录成功后会自动保存登录态
-  - 下次启动会自动加载保存的登录态，无需重复登录
-  - 如果遇到登录问题，删除 profiles/storage_state.json 后重新登录
-  - 使用 /save 命令可以手动保存当前登录状态
-
-═══════════════════════════════════════════════════════════════
-"""
-        print(help_text)
-        logger.debug("用户查看帮助信息")
+            print(f"\n✗ 上传失败: {e}")
 
     async def run(self) -> None:
-        """根据命令选择运行模式"""
-        if self.args.mode == "interactive":
+        query = getattr(self.args, 'query', None)
+        file_path = getattr(self.args, 'file', None)
+        if query or file_path:
+            await self.run_single_query(query or "分析这个文件", file_path)
+        else:
             await self.run_interactive()
-        elif self.args.mode == "query":
-            await self.run_single_query(self.args.query)
 
+
+# ============================================================================
+# CLI 入口
+# ============================================================================
 
 def create_parser() -> argparse.ArgumentParser:
-    """创建命令行参数解析器"""
     parser = argparse.ArgumentParser(
-        description="Gemini 浏览器自动化 MVP - 100% 模仿真人聊天",
+        description="Gemini 自动化工具 - 默认 API 模式，支持多 Key 容灾",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例用法：
-  # 交互模式（非 headless，第一次运行时手动登录）
-  python main.py interactive
 
-  # 交互模式（headless，服务器后台运行）
-  python main.py interactive --headless
+【API 模式（默认）】
+  python main.py                        # 交互模式
+  python main.py "你好"                  # 单次查询
+  python main.py --file image.png "分析这张图片"  # 文件+查询
+  python main.py --keys "key1,key2"     # 指定 API Keys
+  python main.py --model gemini-1.5-pro # 指定模型
 
-  # 使用已安装的 Chrome 浏览器（推荐）
-  python main.py interactive --browser-path "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-
-  # 单次查询
-  python main.py query "你好，请介绍一下自己"
-
-  # 自定义 Profile 和超时
-  python main.py interactive --profile ./my_profiles --timeout 60
-
-  # 完整示例
-  python main.py interactive --headless --profile ./profiles --timeout 120 --retry 5
+【浏览器模式】
+  python main.py --browser              # 浏览器交互模式
+  python main.py --browser "你好"        # 浏览器单次查询
         """,
     )
 
-    # 命令选择
-    subparsers = parser.add_subparsers(
-        dest="mode",
-        help="运行模式",
-        required=True,
-    )
+    # 模式选择
+    parser.add_argument("--browser", action="store_true", help="使用浏览器模式")
 
-    # interactive 模式
-    interactive_parser = subparsers.add_parser(
-        "interactive",
-        help="交互模式 - REPL 循环聊天",
-    )
+    # 位置参数：查询（可选）
+    parser.add_argument("query", nargs="?", default=None, help="单次查询")
 
-    # query 模式
-    query_parser = subparsers.add_parser(
-        "query",
-        help="单次查询模式",
-    )
-    query_parser.add_argument(
-        "query",
-        help="要发送的问题",
-    )
+    # 文件上传参数
+    parser.add_argument("--file", "-f", type=str, default=None, help="上传文件路径")
 
-    # 共享参数
-    for p in [interactive_parser, query_parser]:
-        headless_group = p.add_mutually_exclusive_group()
-        headless_group.add_argument(
-            "--headless",
-            action="store_true",
-            default=None,
-            help="启用 headless 模式（无 GUI 窗口，默认：True）",
-        )
-        headless_group.add_argument(
-            "--no-headless",
-            action="store_true",
-            default=None,
-            help="禁用 headless 模式（显示浏览器窗口）",
-        )
+    # API 模式参数
+    parser.add_argument("--keys", type=str, default=None, help="API Keys（逗号分隔）")
+    parser.add_argument("--keys-file", type=str, default="api_keys.txt", help="API Keys 文件")
+    parser.add_argument("--model", type=str, default="gemini-2.5-flash", help="模型名称")
+    parser.add_argument("--api-timeout", type=int, default=60, help="API 超时（秒）")
 
-        p.add_argument(
-            "--profile",
-            default="./profiles",
-            help="浏览器 Profile 存储目录（默认: ./profiles）",
-        )
-
-        p.add_argument(
-            "--timeout",
-            type=int,
-            default=30,
-            help="操作超时时间，单位秒（默认: 30）",
-        )
-
-        p.add_argument(
-            "--retry",
-            type=int,
-            default=3,
-            help="异常重试次数（默认: 3）",
-        )
-
-        p.add_argument(
-            "--browser-path",
-            type=str,
-            default=None,
-            help="使用已安装的浏览器路径（例如：C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe）",
-        )
+    # 浏览器模式参数
+    parser.add_argument("--headless", action="store_true", default=None, help="浏览器无头模式")
+    parser.add_argument("--no-headless", action="store_true", default=None, help="显示浏览器窗口")
+    parser.add_argument("--profile", default="./profiles", help="Profile 目录")
+    parser.add_argument("--timeout", type=int, default=30, help="超时时间")
+    parser.add_argument("--retry", type=int, default=3, help="重试次数")
 
     return parser
 
 
 async def main():
-    """CLI 主入口"""
     parser = create_parser()
-
-    # 解析参数
     args = parser.parse_args()
 
-    logger.debug(f"启动 Gemini 浏览器自动化 MVP")
-    logger.debug(f"运行模式: {args.mode}")
-    logger.debug(f"Headless: {args.headless}")
-    logger.debug(f"Profile 目录: {args.profile}")
-
-    # 创建 CLI 实例并运行
-    cli = GeminiCLI(args)
+    logger.debug(f"启动 Gemini 自动化工具")
 
     try:
-        await cli.run()
+        if args.browser:
+            cli = GeminiBrowserCLI(args)
+            await cli.run()
+            if cli.browser and not cli.keep_browser_open:
+                try:
+                    await cli.browser.close()
+                except:
+                    pass
+        else:
+            # 默认 API 模式
+            cli = GeminiAPICLI(args)
+            cli.run()
+
+    except APIKeyNotFoundError as e:
+        print(f"\n✗ 错误: {e}")
     except KeyboardInterrupt:
-        logger.debug("用户中断程序")
+        pass
     except Exception as e:
         logger.error(f"程序异常: {e}", exc_info=True)
-    finally:
-        # 清理资源
-        if cli.browser and not cli.keep_browser_open:
-            try:
-                await cli.browser.close()
-            except Exception as e:
-                logger.error(f"关闭浏览器失败: {e}")
-        elif cli.browser and cli.keep_browser_open:
-            logger.info("保持浏览器打开（KEEP_BROWSER_OPEN=true）")
-
-        logger.debug("程序已退出")
 
 
 if __name__ == "__main__":
-    # 运行异步主程序
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n程序已中止")
-        sys.exit(0)
-    except Exception as e:
-        print(f"致命错误: {e}")
-        sys.exit(1)

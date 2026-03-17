@@ -83,3 +83,71 @@ class FileUploadError(FileUploadException):
     def __init__(self, message: str):
         super().__init__(f"文件上传失败: {message}")
 
+
+# ============================================================================
+# API 相关异常
+# ============================================================================
+
+
+class APIException(Exception):
+    """API 异常基类"""
+    pass
+
+
+class APIKeyNotFoundError(APIException):
+    """未找到 API Key 异常"""
+    def __init__(self, message: str = "未配置任何 API Key"):
+        super().__init__(message)
+
+
+class APIKeyInvalidError(APIException):
+    """API Key 无效异常"""
+    def __init__(self, key_hint: str = ""):
+        hint = f" (Key: {key_hint}...)" if key_hint else ""
+        super().__init__(f"API Key 无效{hint}")
+
+
+class APIRateLimitError(APIException):
+    """API 速率限制异常"""
+    def __init__(self, retry_after: int = None):
+        msg = "API 请求频率超限"
+        if retry_after:
+            msg += f"，建议 {retry_after} 秒后重试"
+        super().__init__(msg)
+        self.retry_after = retry_after
+
+
+class APIQuotaExceededError(APIException):
+    """API 配额用尽异常"""
+    def __init__(self, key_hint: str = ""):
+        hint = f" (Key: {key_hint}...)" if key_hint else ""
+        super().__init__(f"API 配额已用尽{hint}")
+
+
+class APINetworkError(APIException):
+    """API 网络错误异常"""
+    def __init__(self, message: str = "网络连接失败"):
+        super().__init__(f"API 网络错误: {message}")
+
+
+class APIServerError(APIException):
+    """API 服务器错误异常 (5xx)"""
+    def __init__(self, status_code: int = None):
+        msg = "API 服务器错误"
+        if status_code:
+            msg += f" (HTTP {status_code})"
+        super().__init__(msg)
+        self.status_code = status_code
+
+
+class APIResponseError(APIException):
+    """API 响应解析错误异常"""
+    def __init__(self, message: str = "无法解析响应"):
+        super().__init__(f"API 响应错误: {message}")
+
+
+class AllKeysExhaustedError(APIException):
+    """所有 API Key 都不可用异常"""
+    def __init__(self, message: str = "所有 API Key 均不可用，请检查配置或稍后重试"):
+        super().__init__(message)
+

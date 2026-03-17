@@ -1,337 +1,155 @@
 ---
-name: gemini-browser-automator
-description: 使用 Playwright 自动化与 Google Gemini 聊天，支持持久化登录、流式输出、文件上传、自动代理检测、默认 headless 模式、性能优化和持续模式
-version: 1.3.0
+name: gemini-automator
+description: Gemini 自动化工具，默认使用 API 模式，支持多 API Key 循环容灾、文件上传、浏览器模式备选
+version: 2.0.0
 type: skill
 tools:
   bash:
-    description: 执行 shell 命令来运行 Gemini 浏览器自动化工具
+    description: 执行 shell 命令运行 Gemini 自动化工具
   read:
-    description: 读取配置文件和日志文件
+    description: 读取配置文件和日志
   write:
-    description: 修改配置文件或创建新的配置
+    description: 修改配置文件
 ---
 
-# Gemini 浏览器自动化工具
+# Gemini 自动化工具
 
-这个技能帮助你使用 Python Playwright 自动化与 Google Gemini 聊天，实现真正的浏览器自动化操作。
+默认使用 Gemini API 模式，支持多 API Key 循环容灾和文件上传。
 
-## 主要功能
+## 核心功能
 
-- **持久化登录态**：首次登录后自动保存登录状态，后续无需重复登录
-- **默认 Headless 模式**：默认使用无头模式，99%+ 时间无窗口运行
-- **智能登录检测**：严格的登录检查，自动处理登录态失效
-- **自动代理检测**：自动检测并使用系统代理，无需手动配置
-- **性能优化**：登录检查速度提升 50-70%，快速进入对话
-- **持续模式**：支持在 OpenClaw 等场景中持续使用，无需重复启动
-- **流式输出**：实时逐字打印 Gemini 生成的回复
-- **文件上传**：支持上传图片、PDF、文本、视频、数据文件
-- **自动重试**：超时、网络错误、浏览器崩溃自动恢复
-- **反检测**：内置反爬虫参数，避免被检测为自动化工具
+- **API 模式（默认）**：使用官方 Gemini API，无需浏览器
+- **多 Key 容灾**：支持多个 API Key 自动轮换，配额用尽自动切换
+- **文件上传**：支持图片、PDF、视频、音频等文件上传分析
+- **浏览器模式**：保留 Playwright 浏览器自动化作为备选
 
-## 使用方法
+## 快速开始
 
-### 1. 首次使用（手动登录）
+### 1. 配置 API Keys
+
+创建 `api_keys.txt` 文件，每行一个 API Key：
+
+```
+AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+AIzaSyYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+```
+
+从 https://aistudio.google.com/apikey 获取 API Key。
+
+### 2. 安装依赖
 
 ```bash
-# 克隆或下载项目
-cd D:\tools\Gemini-Browser-Automator-MVP
-
-# 安装依赖
 pip install -r requirements.txt
-playwright install chromium
-
-# 首次运行（会弹出浏览器窗口要求登录）
-python main.py interactive
 ```
 
-在弹出的浏览器窗口中手动登录 Google 账户，登录成功后回到终端按 ENTER 继续。
-
-**注意**：首次运行需要手动登录，之后会自动使用保存的登录态。
-
-### 2. 日常使用（默认 headless 模式）
+### 3. 使用
 
 ```bash
-# 交互模式（默认 headless，无窗口）
-python main.py interactive
+# 交互模式（默认）
+python main.py
 
-# 单次查询（默认 headless）
-python main.py query "你的问题"
+# 单次查询
+python main.py "你的问题"
 
-# 如果需要查看浏览器（调试用）
-python main.py interactive --headless false
+# 文件+查询
+python main.py --file image.png "分析这张图片"
+python main.py -f document.pdf "总结这个文档"
+
+# 指定模型
+python main.py --model gemini-1.5-pro
+
+# 直接指定 Keys
+python main.py --keys "key1,key2,key3"
 ```
 
-**v1.1 改进**：
-- 默认使用 headless 模式，99%+ 时间无窗口运行
-- 只在登录失效时短暂弹出浏览器，手动确认后又恢复长期 headless
-- 自动检测并使用系统代理（如 127.0.0.1:15715）
-
-### 3. 在 OpenClaw 中使用（持续模式）
-
-在 OpenClaw 中使用时，需要设置环境变量来保持浏览器打开，避免每次回答后都重新启动：
+## 文件分析
 
 ```bash
-# Windows
-set KEEP_BROWSER_OPEN=true
-python main.py interactive
+# 分析图片
+python main.py --file photo.jpg "描述这张图片"
 
-# Linux/Mac
-export KEEP_BROWSER_OPEN=true
-python main.py interactive
+# 分析 PDF
+python main.py -f report.pdf "总结这个报告"
 
-# 或者在 .env 文件中设置
-echo "KEEP_BROWSER_OPEN=true" >> .env
-```
-
-**注意**：
-- `KEEP_BROWSER_OPEN=true` 时，程序结束后不会关闭浏览器
-- 这样可以在 OpenClaw 中持续使用，无需每次重新启动
-- 如果不再使用，可以手动关闭浏览器或删除 `.env` 中的设置
-
-### 4. 文件上传
-
-在交互模式中使用 `/upload` 命令：
-
-```bash
-[Gemini] >> /upload ./image.jpg
-[Gemini] >> /upload ~/Downloads/doc.pdf
-[Gemini] >> /upload /absolute/path/file.csv
+# 分析视频
+python main.py --file video.mp4 "这个视频讲了什么"
 ```
 
 支持的文件类型：
-- 图片：jpg, jpeg, png, gif, webp, bmp（最大 20MB）
-- PDF：pdf（最大 50MB）
-- 文本：txt, doc, docx, md（最大 10MB）
-- 视频：mp4, webm, mov, avi, mkv（最大 100MB）
-- 数据：csv, json, xlsx, xls（最大 20MB）
+- 图片：jpg, png, gif, webp, bmp
+- PDF：pdf
+- 视频：mp4, webm, mov
+- 音频：mp3, wav, flac
+
+## 交互命令
+
+在交互模式中：
+
+| 命令 | 说明 |
+|------|------|
+| `exit` | 退出程序 |
+| `/help` | 显示帮助 |
+| `/status` | 查看 API Key 池状态 |
+| `/upload <path>` | 上传文件 |
+| `/files` | 列出已上传文件 |
+
+## 浏览器模式
+
+如需使用浏览器模式：
+
+```bash
+python main.py --browser              # 交互模式
+python main.py --browser "问题"       # 单次查询
+python main.py --browser --file image.png "分析图片"  # 文件+查询
+```
+
+## 在 OpenClaw 中使用
+
+直接运行即可，程序会自动加载 `api_keys.txt` 中的 Keys：
+
+```bash
+python main.py
+```
+
+## Key 容灾机制
+
+- **自动轮换**：Key 配额用尽时自动切换到下一个
+- **冷却机制**：触发速率限制的 Key 进入 60 秒冷却
+- **状态监控**：使用 `/status` 命令查看 Key 池状态
 
 ## 命令行参数
 
-### Interactive 模式
-
-```bash
-python main.py interactive [OPTIONS]
-```
-
-参数说明：
-- `--headless`：启用/禁用 headless 模式（默认：True，即无窗口）
-- `--profile <dir>`：Profile 存储目录（默认：./profiles）
-- `--timeout <sec>`：操作超时时间（秒，默认：30）
-- `--retry <n>`：异常重试次数（默认：3）
-
-### Query 模式
-
-```bash
-python main.py query <QUESTION> [OPTIONS]
-```
-
-参数说明：
-- `<QUESTION>`：要提问的问题（必需）
-- `--headless`：启用/禁用 headless 模式（默认：True）
-- `--profile <dir>`：Profile 存储目录
-- `--timeout <sec>`：操作超时时间
-- `--retry <n>`：重试次数
-
-## 工作流程（v1.2 性能优化）
-
-1. **启动浏览器**：默认以 headless 模式启动 Chromium 浏览器
-2. **自动代理检测**：自动检测并使用系统代理（如 127.0.0.1:15715）
-3. **快速导航**：使用优化的导航和等待策略
-4. **加载登录态**：加载保存的登录态和 Cookies
-5. **快速登录检查**（v1.2 优化）：
-   - 输入框检查超时从 2 秒减少到 0.5 秒
-   - 找到输入框立即返回
-   - 移除慢速的页面文本检查
-6. **智能 fallback**：
-   - 如果 headless 模式下登录失败 → 自动切换到 headful 模式
-   - 弹出浏览器窗口，提示用户手动登录
-   - 登录成功后保存登录态，下次继续使用 headless 模式
-7. **健康检查**：每次发送消息前检查 session 是否有效
-8. **消息发送**：将用户输入的文本发送到 Gemini
-9. **流式输出**：使用 MutationObserver 实时监听 DOM 变化，逐字输出回复
-10. **文件处理**：支持上传文件，使用 Playwright 的 filechooser 事件拦截
-11. **异常恢复**：自动处理超时、网络错误等异常情况
-
-**v1.2 性能提升**：
-- 登录检查速度提升 50-70%
-- 从启动到开始对话的时间缩短约 60%
-
-## 项目结构
-
-```
-Gemini-Browser-Automator-MVP/
-├── main.py                  # CLI 入口和交互控制器
-├── gemini_browser.py        # 核心浏览器自动化类
-├── config.py                # 配置管理
-├── exceptions.py            # 自定义异常定义
-├── file_uploader.py         # 文件上传功能模块
-├── requirements.txt         # Python 依赖
-├── profiles/                # 浏览器 Profile（自动创建）
-│   └── storage_state.json   # 保存的登录态和 Cookies
-└── logs/                    # 日志文件（自动创建）
-    └── gemini.log
-```
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `query` | 单次查询 | - |
+| `--file`, `-f` | 上传文件路径 | - |
+| `--keys` | API Keys（逗号分隔） | - |
+| `--keys-file` | API Keys 文件 | api_keys.txt |
+| `--model` | 模型名称 | gemini-2.5-flash |
+| `--browser` | 使用浏览器模式 | - |
 
 ## 常见问题
 
-### Q: 首次运行时一直显示"未登录"
-**原因**：首次运行需要手动登录 Google 账户
+### Q: 提示"未配置 API Key"
+创建 `api_keys.txt` 文件或使用 `--keys` 参数传入。
 
-**解决方案**：
-1. 程序会自动弹出浏览器窗口
-2. 在浏览器中手动登录 Google 账户
-3. 登录后等待页面完全加载
-4. 回到终端按 ENTER 继续
-5. 之后会自动保存登录态，后续无需重复登录
+### Q: 所有 Key 都不可用
+检查 Keys 是否有效，或添加更多 Keys。
 
-### Q: 仍然弹出浏览器窗口
-**原因**：可能是登录态失效，或者你显式使用了 `--headless false`
+### Q: 如何切换模型
+使用 `--model` 参数，如 `--model gemini-1.5-pro`。
 
-**解决方案**：
-- 登录态失效是正常的（Google 的 session 有有效期）
-- 在浏览器中重新登录后，下次又会恢复 headless 模式
-- 如果要一直有窗口，可以使用 `--headless false`
+## 配置文件
 
-### Q: 连接超时（net::ERR_CONNECTION_TIMED_OUT）
-**原因**：网络无法访问 Google
+| 文件 | 说明 |
+|------|------|
+| `api_keys.txt` | API Keys 配置（每行一个） |
+| `api_keys.txt.example` | 配置示例 |
 
-**解决方案**：
-- v1.1 已自动检测并使用系统代理
-- 确保你的代理正在运行（如 127.0.0.1:15715）
-- 检查代理配置是否正确
+## 依赖
 
-### Q: 流式输出卡顿或漏字
-**原因**：网络延迟或 PC 性能不足
-
-**解决方案**：
-- 增加超时时间：`--timeout 60`
-- 或者调整检查间隔
-
-### Q: 如何清除登录态重新登录？
-**解决方案**：
-```bash
-# 删除保存的登录态
-rm profiles/storage_state.json
-
-# 重新运行（会要求手动登录）
-python main.py interactive
 ```
-
-### Q: 多轮对话时显示错误内容
-**原因**：多轮对话时 DOM 中累积历史消息
-
-**解决方案**：
-本项目已内置自动处理机制，如果仍有问题：
-- 增加超时：`--timeout 60`
-- 查看详细日志：修改 main.py，改为 `logging.DEBUG` 级别
-- 重启浏览器清空缓存
-
-## 依赖要求
-
-- Python 3.11+
-- 能够访问 Google Gemini 官网的网络（或使用代理）
-- 至少 500MB 内存
-
-## 系统要求
-
-- Python 3.11 或更高版本
-- Windows / macOS / Linux
-- 能正常访问 Google Gemini 官网（或通过代理）
-- 至少 500MB 内存（浏览器进程）
-
-## 调试技巧
-
-查看日志文件：
-```bash
-# 实时查看日志
-tail -f logs/gemini.log
-
-# Windows
-type logs\gemini.log
+playwright>=1.48.0
+python-dotenv>=1.0.0
+google-genai>=1.0.0
 ```
-
-修改日志级别为 DEBUG 以查看详细信息：
-编辑 `main.py`，将 `level=logging.INFO` 改为 `level=logging.DEBUG`。
-
-## v1.1 更新亮点
-
-✅ **默认 Headless 模式**：99%+ 时间无窗口运行
-✅ **智能登录检测**：严格的登录检查，自动处理登录态失效
-✅ **自动代理检测**：自动检测并使用系统代理
-✅ **健康检查**：每次发送消息前检查 session 是否有效
-✅ **页面加载重试**：支持最多 3 次重试，使用指数退避
-✅ **性能优化**：登录检查速度提升 50-70%，快速进入对话
-
-## v1.2 性能优化亮点
-
-- **登录检查加速**：输入框检查超时从 2 秒减少到 0.5 秒
-- **智能返回机制**：找到输入框立即返回，不检查其他条件
-- **移除慢速检查**：去除页面文本检查，大幅提升速度
-- **减少等待时间**：
-  - 登录检查前：从 3 秒减少到 1 秒
-  - 导航后：从 5 秒减少到 2 秒
-  - networkidle 超时：从 10 秒减少到 5 秒
-- **总体提升**：从启动到开始对话的时间缩短约 60%
-
-## v1.3 持续模式亮点
-
-- **KEEP_BROWSER_OPEN 支持**：新增环境变量控制是否关闭浏览器
-- **OpenClaw 优化**：在 OpenClaw 中使用时可以持续对话，无需重复启动
-- **异常恢复**：异常发生时继续运行而不是退出
-- **使用方式**：
-  ```bash
-  # Windows
-  set KEEP_BROWSER_OPEN=true
-  python main.py interactive
-  
-  # Linux/Mac
-  export KEEP_BROWSER_OPEN=true
-  python main.py interactive
-  ```
-
-## 注意事项
-
-- 首次运行需要手动登录 Google 账户
-- 登录态有时效性（通常 1-4 周），失效时会短暂弹出浏览器
-- 程序会自动检测并使用系统代理
-- 项目仅供学习和研究使用，请遵守 Google Gemini 的使用条款
-- 不要用于大规模自动化爬取或滥用服务
-- 建议使用虚拟环境来管理依赖
-
-### Q: 多轮对话时显示错误内容
-本项目已内置自动处理机制，如果仍有问题，尝试增加超时或查看详细日志。
-
-## 依赖要求
-
-- Python 3.11+
-- 能够访问 Google Gemini 官网的网络
-- 至少 500MB 内存
-
-## 系统要求
-
-- Python 3.11 或更高版本
-- Windows / macOS / Linux
-- 能正常访问 Google Gemini 官网
-- 至少 500MB 内存（浏览器进程）
-
-## 调试技巧
-
-查看日志文件：
-```bash
-# 实时查看日志
-tail -f logs/gemini.log
-
-# Windows
-type logs\gemini.log
-```
-
-修改日志级别为 DEBUG 以查看详细信息：
-编辑 `main.py`，将 `level=logging.INFO` 改为 `level=logging.DEBUG`。
-
-## 注意事项
-
-- 首次运行需要手动登录 Google 账户
-- 项目仅供学习和研究使用，请遵守 Google Gemini 的使用条款
-- 不要用于大规模自动化爬取或滥用服务
-- 建议使用虚拟环境来管理依赖
