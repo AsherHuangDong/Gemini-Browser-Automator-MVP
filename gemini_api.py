@@ -405,16 +405,31 @@ class GeminiAPIClient:
                         logger.info(f"正在上传文件: {path.name}")
                         file_obj = client.files.upload(file=str(path))
                         logger.info(f"文件上传成功: {file_obj.name}")
+                        
+                        # 等待文件处理完成
+                        while file_obj.state == "PROCESSING":
+                            time.sleep(1)
+                            file_obj = client.files.get(name=file_obj.name)
+                            logger.debug(f"文件处理中: {file_obj.state}")
+                        
+                        if file_obj.state == "FAILED":
+                            raise APIResponseError(f"文件处理失败: {file_obj.state}")
+                        
+                        logger.info(f"文件处理完成: {file_obj.state}")
                     else:
                         raise FileNotFoundError(f"文件不存在: {file_path}")
                 elif file_uri:
-                    pass
+                    # 通过 URI 获取文件（注意：必须是用同一个 Key 上传的）
+                    file_obj = client.files.get(name=file_uri)
+                    if file_obj.state == "PROCESSING":
+                        while file_obj.state == "PROCESSING":
+                            time.sleep(1)
+                            file_obj = client.files.get(name=file_uri)
+                            logger.debug(f"文件处理中: {file_obj.state}")
                 
                 # 构建内容
                 parts = []
-                if file_uri:
-                    parts.append(types.Part(file_data=types.FileData(file_uri=file_uri)))
-                elif file_obj:
+                if file_obj:
                     parts.append(types.Part(file_data=types.FileData(file_uri=file_obj.uri)))
                 parts.append(types.Part(text=prompt))
                 
